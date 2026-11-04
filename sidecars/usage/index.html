@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Model Usage</title>
+<script src="/preload.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg-light: #ffffff;
+    --bg-dark: #131314;
+    --fg-light: #1f2328;
+    --fg-dark: #e3e3e3;
+    --dim-light: #59636e;
+    --dim-dark: #9aa0a6;
+
+    --background: var(--bg-light);
+    --foreground: var(--fg-light);
+    --muted-foreground: var(--dim-light);
+    --border: rgba(127, 127, 127, 0.25);
+
+    --c-ok: #2da44e;
+    --c-warn: #d29922;
+    --c-danger: #cf222e;
+    --c-accent: #0969da;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: var(--bg-dark);
+      --foreground: var(--fg-dark);
+      --muted-foreground: var(--dim-dark);
+      --c-ok: #3fb950;
+      --c-warn: #d29922;
+      --c-danger: #f85149;
+      --c-accent: #58a6ff;
+    }
+  }
+
+  @supports (color: light-dark(white, black)) {
+    :root {
+      --background: light-dark(var(--bg-light), var(--bg-dark));
+      --foreground: light-dark(var(--fg-light), var(--fg-dark));
+      --muted-foreground: light-dark(var(--dim-light), var(--dim-dark));
+      --c-ok: light-dark(#2da44e, #3fb950);
+      --c-danger: light-dark(#cf222e, #f85149);
+      --c-accent: light-dark(#0969da, #58a6ff);
+    }
+  }
+
+  :root {
+    --fg: var(--foreground);
+    --dim: var(--muted-foreground);
+    --line: var(--border);
+    --track: color-mix(in srgb, var(--dim) 24%, transparent);
+    scrollbar-width: thin;
+    scrollbar-color: var(--dim) transparent;
+  }
+
+  @supports not (scrollbar-color: auto) {
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 4px; }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: var(--fg);
+    background: var(--background);
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { padding: 12px 14px 18px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .dim { color: var(--dim); }
+
+  /* Header */
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .live {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex: none;
+  }
+  .live.on { background: var(--c-ok); }
+  .live.err { background: var(--c-danger); }
+  .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--fg);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 3px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) { border-color: var(--dim); }
+  button:disabled { color: var(--dim); cursor: default; }
+
+  /* Notice / Warning banner */
+  .notice {
+    margin-top: 10px;
+    padding: 7px 9px;
+    border: 1px solid var(--c-warn);
+    border-radius: 5px;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .notice.error { border-color: var(--c-danger); }
+
+  /* Sections */
+  section {
+    margin-top: 14px;
+  }
+  section + section {
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  h2 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .sec-sub {
+    margin: 0 0 8px;
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+
+  /* Quota Bucket Row */
+  .bucket-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .bucket {
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  .bucket-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 5px;
+  }
+  .bucket-label {
+    font-weight: 500;
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tag {
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--dim);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 5px;
+    line-height: 1.5;
+  }
+  .tag.ok { color: var(--c-ok); border-color: var(--c-ok); }
+  .bucket-stats {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .pct-main {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .pct-used {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .bar-track {
+    width: 100%;
+    height: 6px;
+    background: var(--track);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--c-ok);
+  }
+  .bar-fill.warn { background: var(--c-warn); }
+  .bar-fill.danger { background: var(--c-danger); }
+  .bucket-meta {
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+
+  /* Plan & Credits rows */
+  .kv-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .kv-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12.5px;
+  }
+  .kv-val {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .links-row {
+    margin-top: 8px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  a.ext-link {
+    font-size: 11.5px;
+    color: var(--c-accent);
+    text-decoration: none;
+  }
+  a.ext-link:hover { text-decoration: underline; }
+
+  .empty {
+    margin: 40px 8px;
+    text-align: center;
+    color: var(--dim);
+  }
+  footer {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--dim);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .foot-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+</style>
+</head>
+<body>
+<main id="main"><p class="empty">Loading usage data…</p></main>
+
+<script>
+(() => {
+  const POLL_MS = 15000;
+  const TICK_MS = 30000;
+  const doFetch = (window.sidecar && window.sidecar.fetch) || fetch;
+  const main = document.getElementById('main');
+
+  let currentData = null;
+  let isRefreshing = false;
+  let staleWarning = '';
+
+  function el(tag, attrs = {}, children = []) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v === null || v === undefined) continue;
+      if (k === 'className') node.className = v;
+      else if (k === 'textContent') node.textContent = v;
+      else node.setAttribute(k, String(v));
+    }
+    for (const child of children) {
+      if (child === null || child === undefined) continue;
+      if (typeof child === 'string') node.appendChild(document.createTextNode(child));
+      else node.appendChild(child);
+    }
+    return node;
+  }
+
+  function formatPct(fraction) {
+    if (typeof fraction !== 'number' || Number.isNaN(fraction)) return '0%';
+    const pct = Math.max(0, Math.min(100, fraction * 100));
+    if (pct === 0 || pct === 100) return `${Math.round(pct)}%`;
+    return `${pct.toFixed(1)}%`;
+  }
+
+  function formatUsedPct(fraction) {
+    if (typeof fraction !== 'number' || Number.isNaN(fraction)) return '100% used';
+    const used = Math.max(0, Math.min(100, (1 - fraction) * 100));
+    if (used === 0) return '0% used';
+    if (used < 0.1) return '<0.1% used';
+    return `${used.toFixed(1)}% used`;
+  }
+
+  function formatResetInfo(resetTimeStr) {
+    if (!resetTimeStr) return { countdown: 'No reset timer', exact: '' };
+    const resetDate = new Date(resetTimeStr);
+    if (Number.isNaN(resetDate.getTime())) return { countdown: 'Unknown reset', exact: '' };
+
+    const diffMs = resetDate.getTime() - Date.now();
+    let countdown;
+    if (diffMs <= 0) {
+      countdown = 'Resets in <1m';
+    } else {
+      const totalMins = Math.floor(diffMs / 60000);
+      const days = Math.floor(totalMins / 1440);
+      const hours = Math.floor((totalMins % 1440) / 60);
+      const mins = totalMins % 60;
+      if (days > 0) {
+        countdown = hours > 0 ? `Resets in ${days}d ${hours}h` : `Resets in ${days}d`;
+      } else if (hours > 0) {
+        countdown = mins > 0 ? `Resets in ${hours}h ${mins}m` : `Resets in ${hours}h`;
+      } else {
+        countdown = mins > 0 ? `Resets in ${mins}m` : 'Resets in <1m';
+      }
+    }
+
+    const now = new Date();
+    const sameDay = resetDate.toDateString() === now.toDateString();
+    const timeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const exact = sameDay
+      ? `At ${timeStr}`
+      : `${resetDate.toLocaleDateString([], { month: 'numeric', day: 'numeric' })} ${timeStr}`;
+
+    return { countdown, exact };
+  }
+
+  function buildBucketNode(bucket) {
+    const frac = typeof bucket.remainingFraction === 'number' ? bucket.remainingFraction : 0;
+    const pctNum = Math.max(0, Math.min(100, frac * 100));
+    const statusClass = frac < 0.1 ? 'danger' : (frac < 0.25 ? 'warn' : '');
+
+    const labelChildren = [el('span', { textContent: bucket.displayName })];
+    if (bucket.window) {
+      labelChildren.push(el('span', { className: 'tag', textContent: bucket.window }));
+    }
+
+    const statsNode = el('div', { className: 'bucket-stats num' }, [
+      el('span', { className: 'pct-used', textContent: formatUsedPct(frac) }),
+      el('span', { className: 'pct-main', textContent: formatPct(frac) }),
+    ]);
+
+    const barTrack = el('div', { className: 'bar-track' }, [
+      el('div', {
+        className: `bar-fill${statusClass ? ' ' + statusClass : ''}`,
+        style: `width: ${pctNum.toFixed(1)}%`,
+      }),
+    ]);
+
+    const { countdown, exact } = formatResetInfo(bucket.resetTime);
+    const metaNode = el('div', { className: 'bucket-meta num' }, [
+      el('span', { textContent: countdown }),
+      el('span', { textContent: exact }),
+    ]);
+
+    return el('div', { className: 'bucket' }, [
+      el('div', { className: 'bucket-top' }, [
+        el('div', { className: 'bucket-label' }, labelChildren),
+        statsNode,
+      ]),
+      barTrack,
+      metaNode,
+    ]);
+  }
+
+  function buildGroupSection(group) {
+    const children = [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: group.displayName || 'Model Quota' }),
+      ]),
+    ];
+    if (group.description) {
+      children.push(el('p', { className: 'sec-sub', textContent: group.description }));
+    }
+    const buckets = Array.isArray(group.buckets) ? group.buckets : [];
+    if (buckets.length === 0) {
+      children.push(el('p', { className: 'sec-sub', textContent: 'No active quota buckets.' }));
+    } else {
+      children.push(el('div', { className: 'bucket-list' }, buckets.map(buildBucketNode)));
+    }
+    return el('section', {}, children);
+  }
+
+  function buildPlanAndCreditsSection(plan, credits) {
+    if (!plan && !credits) return null;
+    const rows = [];
+
+    if (plan) {
+      const valBadges = [el('span', { textContent: plan.tierName })];
+      if (plan.planName && plan.planName !== plan.tierName) {
+        valBadges.push(el('span', { className: 'tag ok', textContent: plan.planName }));
+      }
+      rows.push(el('div', { className: 'kv-row' }, [
+        el('span', { className: 'dim', textContent: 'Current Plan' }),
+        el('span', { className: 'kv-val' }, valBadges),
+      ]));
+    }
+
+    if (credits) {
+      const overageText = credits.overagesEnabled === true
+        ? 'Overages On'
+        : (credits.overagesEnabled === false ? 'Overages Off' : 'Overages Unknown');
+      rows.push(el('div', { className: 'kv-row' }, [
+        el('span', { className: 'dim', textContent: 'AI Credits' }),
+        el('span', { className: 'kv-val num' }, [
+          el('span', { textContent: String(credits.available) }),
+          el('span', {
+            className: `tag${credits.overagesEnabled ? ' ok' : ''}`,
+            textContent: overageText,
+          }),
+        ]),
+      ]));
+      if (credits.minimumForUsage > 0) {
+        rows.push(el('div', { className: 'kv-row' }, [
+          el('span', { className: 'dim', textContent: 'Min Credit Threshold' }),
+          el('span', { className: 'dim num', textContent: `${credits.minimumForUsage} credits` }),
+        ]));
+      }
+    }
+
+    const children = [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: 'Plan & AI Credits' }),
+      ]),
+    ];
+    if (plan && plan.upgradeText) {
+      children.push(el('p', { className: 'sec-sub', textContent: plan.upgradeText }));
+    }
+    children.push(el('div', { className: 'kv-list' }, rows));
+
+    const links = [];
+    if (plan && plan.upgradeUri && /^https:\/\//i.test(plan.upgradeUri)) {
+      links.push(el('a', {
+        className: 'ext-link',
+        href: plan.upgradeUri,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        textContent: 'Upgrade Plan ↗',
+      }));
+    }
+    if (credits) {
+      links.push(el('a', {
+        className: 'ext-link',
+        href: 'https://antigravity.google/g1-activity?utm_source=antigravity&utm_medium=web',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        textContent: 'Credit Activity ↗',
+      }));
+      links.push(el('a', {
+        className: 'ext-link',
+        href: 'https://antigravity.google/g1-credits?utm_source=antigravity&utm_medium=web',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        textContent: 'Get AI Credits ↗',
+      }));
+    }
+    if (links.length > 0) {
+      children.push(el('div', { className: 'links-row' }, links));
+    }
+
+    return el('section', {}, children);
+  }
+
+  function render() {
+    if (!currentData) return;
+    const r = currentData;
+    const nodes = [];
+
+    const refreshBtn = el('button', {
+      type: 'button',
+      textContent: isRefreshing ? 'Refreshing…' : 'Refresh',
+    });
+    if (isRefreshing) refreshBtn.disabled = true;
+    refreshBtn.addEventListener('click', () => refresh(true));
+
+    const liveClass = staleWarning ? 'live err' : 'live on';
+    nodes.push(el('div', { className: 'top' }, [
+      el('div', { className: 'title-wrap' }, [
+        el('span', { className: liveClass, title: staleWarning || 'Live' }),
+        el('span', { className: 'panel-title', textContent: 'Models & Usage' }),
+      ]),
+      refreshBtn,
+    ]));
+
+    const allWarnings = [...(Array.isArray(r.warnings) ? r.warnings : [])];
+    if (staleWarning) allWarnings.unshift(staleWarning);
+    for (const w of allWarnings) {
+      nodes.push(el('div', { className: 'notice', textContent: w }));
+    }
+
+    const groups = Array.isArray(r.groups) ? r.groups : [];
+    if (groups.length === 0) {
+      nodes.push(el('section', {}, [
+        el('p', { className: 'sec-sub', textContent: 'No model quota information available.' }),
+      ]));
+    } else {
+      for (const g of groups) {
+        nodes.push(buildGroupSection(g));
+      }
+    }
+
+    const planSection = buildPlanAndCreditsSection(r.plan, r.credits);
+    if (planSection) nodes.push(planSection);
+
+    const updatedTime = r.updatedAt
+      ? new Date(r.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : '';
+    const footChildren = [];
+    if (r.quotaDescription) {
+      footChildren.push(el('span', { textContent: r.quotaDescription }));
+    }
+    footChildren.push(el('div', { className: 'foot-row num' }, [
+      el('span', { textContent: 'Auto-refreshes every 60s' }),
+      el('span', { textContent: updatedTime ? `Updated ${updatedTime}` : '' }),
+    ]));
+    nodes.push(el('footer', {}, footChildren));
+
+    main.replaceChildren(...nodes);
+  }
+
+  function renderFatalError(msg) {
+    currentData = null;
+    const retryBtn = el('button', { type: 'button', textContent: 'Retry' });
+    retryBtn.addEventListener('click', () => refresh(true));
+    main.replaceChildren(
+      el('div', { className: 'top' }, [
+        el('div', { className: 'title-wrap' }, [
+          el('span', { className: 'live err' }),
+          el('span', { className: 'panel-title', textContent: 'Models & Usage' }),
+        ]),
+        retryBtn,
+      ]),
+      el('div', { className: 'notice error', textContent: `Failed to load usage data: ${msg}` })
+    );
+  }
+
+  async function refresh(force = false) {
+    if (!force && document.hidden) return;
+    if (isRefreshing) return;
+    isRefreshing = true;
+    if (currentData) render();
+
+    try {
+      const qs = force ? '?force=1' : '';
+      const res = await doFetch(`/api/usage${qs}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.message || data.error);
+      }
+      currentData = data;
+      staleWarning = '';
+      isRefreshing = false;
+      render();
+    } catch (err) {
+      isRefreshing = false;
+      if (currentData) {
+        staleWarning = `Refresh failed (${err.message}). Showing last known data.`;
+        render();
+      } else {
+        renderFatalError(err.message || 'Unknown error');
+      }
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refresh(false);
+  });
+
+  refresh(false);
+  setInterval(() => refresh(false), POLL_MS);
+  setInterval(() => {
+    if (!document.hidden && currentData && !isRefreshing) render();
+  }, TICK_MS);
+})();
+</script>
+</body>
+</html>
