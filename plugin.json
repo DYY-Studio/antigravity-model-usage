@@ -1,0 +1,7 @@
+{
+  "name": "model-usage",
+  "displayName": "Model Usage",
+  "description": "Live model quota, reset timers, subscription plan, and AI credits in the side panel without opening Settings.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg"
+}
