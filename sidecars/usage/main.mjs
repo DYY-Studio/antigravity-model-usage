@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Response, SidecarApp } from 'sidecar_sdk';
 
@@ -44,6 +44,7 @@ function lsRequest(method, body) {
         'Content-Length': Buffer.byteLength(payload),
       },
       timeout: 8000,
+      rejectUnauthorized: false,
     }, (res) => {
       let text = '';
       res.on('data', (chunk) => { text += chunk; });
@@ -187,7 +188,13 @@ export async function fetchUsageReport(forceRequested = false) {
   };
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+function isSamePath(a, b) {
+  const pa = resolve(a);
+  const pb = resolve(b);
+  return process.platform === 'win32' ? pa.toLowerCase() === pb.toLowerCase() : pa === pb;
+}
+
+const isMain = Boolean(process.argv[1] && isSamePath(fileURLToPath(import.meta.url), process.argv[1]));
 if (isMain && process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) {
   const app = new SidecarApp();
 

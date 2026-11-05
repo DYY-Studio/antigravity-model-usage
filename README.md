@@ -10,8 +10,16 @@ A **Model Usage** side panel for the **Antigravity 2.0** desktop app that displa
 
 ## Installation
 
-1. Clone or copy this folder into `~/.gemini/config/plugins/model-usage`:
+1. Clone or copy this folder into your Antigravity plugins directory:
+
    ```bash
+   # macOS / Linux
    git clone https://github.com/DYY-Studio/antigravity-model-usage.git ~/.gemini/config/plugins/model-usage
    ```
+
+   ```powershell
+   # Windows (PowerShell)
+   git clone https://github.com/DYY-Studio/antigravity-model-usage.git "$HOME\.gemini\config\plugins\model-usage"
+   ```
+
 2. Restart Antigravity and open **Model Usage** in the right-side auxiliary panel.
