@@ -149,7 +149,6 @@ export async function fetchUsageReport(forceRequested = false) {
     || userStatus?.userTier
     || codeAssistResp?.response?.currentTier
     || null;
-  const planInfo = userStatus?.planStatus?.planInfo || null;
 
   const creditSetting = readUseAiCreditsSetting();
   if (creditSetting.warning) {
@@ -168,12 +167,11 @@ export async function fetchUsageReport(forceRequested = false) {
     }
     : null;
 
-  const plan = tier || planInfo
+  const plan = tier
     ? {
-      tierName: tier?.description || tier?.name || planInfo?.planName || 'Unknown',
-      planName: planInfo?.planName || '',
-      upgradeText: tier?.upgradeSubscriptionText || '',
-      upgradeUri: tier?.upgradeSubscriptionUri || '',
+      tierName: tier.description || tier.name || 'Unknown',
+      upgradeText: tier.upgradeSubscriptionText || '',
+      upgradeUri: tier.upgradeSubscriptionUri || '',
     }
     : null;
 

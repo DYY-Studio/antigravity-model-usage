@@ -424,13 +424,9 @@
     const rows = [];
 
     if (plan) {
-      const valBadges = [el('span', { textContent: plan.tierName })];
-      if (plan.planName && plan.planName !== plan.tierName) {
-        valBadges.push(el('span', { className: 'tag ok', textContent: plan.planName }));
-      }
       rows.push(el('div', { className: 'kv-row' }, [
         el('span', { className: 'dim', textContent: 'Current Plan' }),
-        el('span', { className: 'kv-val' }, valBadges),
+        el('span', { className: 'kv-val', textContent: plan.tierName }),
       ]));
     }
 
