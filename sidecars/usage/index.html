@@ -330,6 +330,12 @@
     background: color-mix(in srgb, var(--fg) 10%, transparent);
     font-weight: 600;
   }
+  .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
   select.proj-select {
     font: inherit;
     font-size: 11.5px;
@@ -338,9 +344,38 @@
     border: 1px solid var(--line);
     border-radius: 5px;
     padding: 2.5px 6px;
-    max-width: 170px;
+    max-width: 155px;
     text-overflow: ellipsis;
   }
+  select.proj-select.active-filter {
+    border-color: var(--c-accent);
+    font-weight: 500;
+  }
+  .pricing-foot {
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .pricing-saved {
+    color: var(--c-ok);
+    font-weight: 600;
+  }
+  .link-btn {
+    border: none;
+    background: transparent;
+    color: var(--c-accent);
+    padding: 0 2px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .link-btn:hover { text-decoration: underline; }
 
   /* Stat Tiles Grid */
   .tile-grid {
@@ -507,6 +542,20 @@
     gap: 4px;
     min-width: 0;
   }
+  .item-row.clickable {
+    padding: 5px 6px;
+    margin: -5px -6px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .item-row.clickable:hover {
+    background: color-mix(in srgb, var(--fg) 5%, transparent);
+  }
+  .item-row.selected {
+    background: color-mix(in srgb, var(--c-accent) 10%, transparent);
+    border-color: color-mix(in srgb, var(--c-accent) 45%, transparent);
+  }
   .item-head {
     display: flex;
     align-items: baseline;
@@ -607,9 +656,10 @@
   let quotaRefreshing = false;
   let quotaWarning = '';
 
-  // Stats state & cache (keyed by range::project, like OpenChamber's usageStatsStore)
+  // Stats state & cache (keyed by range::project::model)
   let statsRange = '30d';
   let statsProject = '__all__';
+  let statsModel = '__all__';
   let modelDimension = 'tokens'; // 'tokens' | 'cost' | 'steps'
   let showAllTools = false;
   let activeBarIdx = null;
@@ -622,8 +672,15 @@
   const fmtDec = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
   const fmtPct = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 });
   const fmtCost = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+  const fmtRate2 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtRate4 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 });
   const fmtDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
   const fmtDayYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  function fmtRate(v) {
+    if (typeof v !== 'number' || Number.isNaN(v)) return '—';
+    return Math.round(v * 100) === v * 100 ? fmtRate2.format(v) : fmtRate4.format(v);
+  }
 
   function el(tag, attrs = {}, children = []) {
     const node = document.createElement(tag);
@@ -641,8 +698,8 @@
     return node;
   }
 
-  function statsKey(range = statsRange, project = statsProject) {
-    return `${range}::${project}`;
+  function statsKey(range = statsRange, project = statsProject, model = statsModel) {
+    return `${range}::${project}::${model}`;
   }
 
   // --- Shared Header ---------------------------------------------------------
@@ -998,7 +1055,16 @@
     ];
   }
 
-  function buildStatsToolbar(projects) {
+  function selectModelFilter(nextModel) {
+    const val = nextModel || '__all__';
+    if (statsModel === val) return;
+    statsModel = val;
+    activeBarIdx = null;
+    render();
+    loadStats(false);
+  }
+
+  function buildStatsToolbar(projects, models, modelFamilies, selectedModel) {
     const ranges = [
       { value: '7d', label: '7d' },
       { value: '30d', label: '30d' },
@@ -1021,23 +1087,128 @@
       return btn;
     });
 
-    const selectEl = el('select', { className: 'proj-select', 'aria-label': 'Project filter' }, [
+    const projSelect = el('select', {
+      className: `proj-select${statsProject !== '__all__' ? ' active-filter' : ''}`,
+      'aria-label': 'Project filter',
+    }, [
       el('option', { value: '__all__', textContent: 'All projects' }),
       ...(Array.isArray(projects) ? projects : []).map((p) =>
         el('option', { value: p.id, textContent: p.name, title: p.path })
       ),
     ]);
-    selectEl.value = statsProject;
-    selectEl.addEventListener('change', (e) => {
+    projSelect.value = statsProject;
+    projSelect.addEventListener('change', (e) => {
       statsProject = e.target.value;
       activeBarIdx = null;
       render();
       loadStats(false);
     });
 
+    const modelOptions = [el('option', { value: '__all__', textContent: 'All models' })];
+    const families = Array.isArray(modelFamilies) ? modelFamilies : [];
+    const variants = Array.isArray(models) ? models : [];
+    const seenValues = new Set(['__all__']);
+
+    if (families.length > 0) {
+      const famNodes = families.map((f) => {
+        seenValues.add(f.familyKey);
+        return el('option', {
+          value: f.familyKey,
+          textContent: `${f.displayName} (All)`,
+        });
+      });
+      modelOptions.push(el('optgroup', { label: 'Model Series' }, famNodes));
+    }
+
+    if (variants.length > 0) {
+      const varNodes = variants.map((m) => {
+        const key = m.key || `${m.providerID}/${m.modelID}`;
+        seenValues.add(key);
+        const label = m.variant ? `${m.displayName} (${m.variant})` : m.displayName;
+        return el('option', { value: key, textContent: label });
+      });
+      modelOptions.push(el('optgroup', { label: 'Specific Variants' }, varNodes));
+    }
+
+    if (statsModel !== '__all__' && !seenValues.has(statsModel)) {
+      modelOptions.push(
+        el('option', {
+          value: statsModel,
+          textContent: selectedModel?.fullLabel || statsModel,
+        })
+      );
+    }
+
+    const modelSelect = el('select', {
+      className: `proj-select${statsModel !== '__all__' ? ' active-filter' : ''}`,
+      'aria-label': 'Model filter',
+    }, modelOptions);
+    modelSelect.value = statsModel;
+    modelSelect.addEventListener('change', (e) => {
+      selectModelFilter(e.target.value);
+    });
+
     return el('div', { className: 'stats-toolbar' }, [
       el('div', { className: 'chip-group', role: 'group', 'aria-label': 'Time range' }, rangeButtons),
-      selectEl,
+      el('div', { className: 'filter-group' }, [projSelect, modelSelect]),
+    ]);
+  }
+
+  function buildSelectedModelPricingSection(stats) {
+    const sm = stats.selectedModel;
+    if (!sm || !sm.pricing || !sm.costBreakdown) return null;
+    const p = sm.pricing;
+    const cb = sm.costBreakdown;
+    const t = stats.tokens || {};
+
+    const clearBtn = el('button', {
+      type: 'button',
+      className: 'link-btn',
+      textContent: '× All models',
+      title: 'Clear model filter',
+    });
+    clearBtn.addEventListener('click', () => selectModelFilter('__all__'));
+
+    return el('section', {}, [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: `Public API pricing · ${sm.fullLabel}` }),
+        el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+          el('span', { className: 'sec-caption', textContent: p.benchmark || 'Public API benchmark' }),
+          clearBtn,
+        ]),
+      ]),
+      el('div', { className: 'card-box' }, [
+        el('div', { className: 'tile-grid cols-4', style: 'margin-top:0' }, [
+          buildStatTile(
+            'Input rate',
+            `${fmtRate(p.input)} / 1M`,
+            `${fmtCompact.format(t.input || 0)} tok · ${fmtCost.format(cb.input)}`
+          ),
+          buildStatTile(
+            'Output rate',
+            `${fmtRate(p.output)} / 1M`,
+            `${fmtCompact.format(t.output || 0)} tok · ${fmtCost.format(cb.output)}`
+          ),
+          buildStatTile(
+            'Reasoning rate',
+            `${fmtRate(p.output)} / 1M`,
+            `${fmtCompact.format(t.reasoning || 0)} tok · ${fmtCost.format(cb.reasoning)}`
+          ),
+          buildStatTile(
+            `Cache read rate (-${p.cacheDiscountPct}%)`,
+            `${fmtRate(p.cacheRead)} / 1M`,
+            `${fmtCompact.format(t.cacheRead || 0)} tok · ${fmtCost.format(cb.cacheRead)}`
+          ),
+        ]),
+        el('div', { className: 'pricing-foot num' }, [
+          el('span', {}, [
+            'Cache savings: ',
+            el('span', { className: 'pricing-saved', textContent: `${fmtCost.format(cb.cacheSaved)} saved` }),
+            ` (${p.cacheDiscountPct}% off input rate)`,
+          ]),
+          el('span', { textContent: `Uncached eq: ${fmtCost.format(cb.uncachedTotal)}` }),
+        ]),
+      ]),
     ]);
   }
 
@@ -1198,12 +1369,17 @@
     const maxVal = ranked.reduce((peak, m) => Math.max(peak, valOf(m)), 0);
 
     const listItems = ranked.map((m) => {
+      const mKey = m.key || `${m.providerID}/${m.modelID}`;
+      const isSelected = statsModel === mKey || statsModel === m.familyKey;
       const sharePct = maxVal > 0 ? (valOf(m) / maxVal) * 100 : 0;
       const provInitial = (m.providerName || 'G').charAt(0).toUpperCase();
       const rightText = modelDimension === 'steps'
         ? `${fmtInt.format(m.steps)} · ${fmtCost.format(m.cost)}`
         : `${fmtCompact.format(m.tokens.total)} · ${fmtCost.format(m.cost)}`;
       const tpsHint = m.avgOutputTps ? ` · ${m.avgOutputTps} tok/s` : '';
+      const priceHint = m.pricing
+        ? ` · API: In ${fmtRate(m.pricing.input)} / Out ${fmtRate(m.pricing.output)} / Cache ${fmtRate(m.pricing.cacheRead)} per 1M`
+        : '';
 
       let barInner;
       if (modelDimension === 'tokens' && m.tokens.total > 0) {
@@ -1221,9 +1397,9 @@
         });
       }
 
-      return el('li', {
-        className: 'item-row',
-        title: `${m.providerName} · ${m.modelID}${tpsHint}`,
+      const rowEl = el('li', {
+        className: `item-row clickable${isSelected ? ' selected' : ''}`,
+        title: `${m.providerName} · ${m.modelID}${tpsHint}${priceHint} (click to filter)`,
       }, [
         el('div', { className: 'item-head' }, [
           el('div', { className: 'item-title' }, [
@@ -1235,11 +1411,18 @@
         ]),
         el('div', { className: 'thin-track' }, [barInner]),
       ]);
+      rowEl.addEventListener('click', () => {
+        selectModelFilter(statsModel === mKey ? '__all__' : mKey);
+      });
+      return rowEl;
     });
 
     return el('section', {}, [
       el('div', { className: 'sec-head' }, [
-        el('h2', { textContent: 'Models' }),
+        el('div', { style: 'display:flex;align-items:baseline;gap:6px' }, [
+          el('h2', { textContent: 'Models' }),
+          el('span', { className: 'sec-caption', textContent: 'Click row to filter & inspect API pricing' }),
+        ]),
         models.length > 0 ? el('div', { className: 'chip-group' }, dimButtons) : null,
       ]),
       models.length === 0
@@ -1310,9 +1493,14 @@
   function buildStatsNodes() {
     const cached = statsCache.get(statsKey());
     const stats = cached?.data || null;
-    const anyProjects = stats?.projects || Array.from(statsCache.values())[0]?.data?.projects || [];
+    const fallbackData = Array.from(statsCache.values()).find((c) => c?.data?.models?.length)?.data
+      || Array.from(statsCache.values())[0]?.data
+      || null;
+    const anyProjects = stats?.projects || fallbackData?.projects || [];
+    const anyModels = (stats?.models?.length ? stats.models : fallbackData?.models) || [];
+    const anyFamilies = (stats?.modelFamilies?.length ? stats.modelFamilies : fallbackData?.modelFamilies) || [];
 
-    const nodes = [buildStatsToolbar(anyProjects)];
+    const nodes = [buildStatsToolbar(anyProjects, anyModels, anyFamilies, stats?.selectedModel)];
 
     if (statsError && !stats) {
       const retryBtn = el('button', { type: 'button', textContent: 'Try again' });
@@ -1331,7 +1519,10 @@
       nodes.push(el('div', { className: 'notice', textContent: `Refresh failed (${statsError}). Showing cached stats.` }));
     }
 
+    const pricingCard = buildSelectedModelPricingSection(stats);
+
     if (stats.prompts === 0 && stats.steps === 0) {
+      if (pricingCard) nodes.push(pricingCard);
       nodes.push(el('div', { className: 'empty' }, [
         el('div', { style: 'font-weight:600;color:var(--fg);margin-bottom:3px', textContent: 'No activity in this period' }),
         el('div', { textContent: 'Sessions you run will show up here.' }),
@@ -1354,6 +1545,10 @@
       buildStatTile('Longest streak', `${fmtInt.format(stats.streak || 0)}d`),
     ]));
 
+    if (pricingCard) {
+      nodes.push(pricingCard);
+    }
+
     nodes.push(buildActivitySection(stats));
 
     const tokComp = buildTokenCompositionSection(stats);
@@ -1364,7 +1559,7 @@
     nodes.push(buildToolsSection(stats));
 
     const updatedTime = stats.updatedAt
-      ? new Date(stats.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      ? new Date(stats.updatedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : '';
     nodes.push(el('footer', {}, [
       el('div', { className: 'foot-row num' }, [
@@ -1423,6 +1618,7 @@
       const params = new URLSearchParams({
         range: statsRange,
         project: statsProject,
+        model: statsModel,
         tz,
         force: force ? '1' : '0',
       });

@@ -6,8 +6,9 @@ A **Model Usage** side panel for the **Antigravity 2.0** desktop app that displa
 
 - **Model Quota (`Quota` tab)**: Remaining percentage, progress bar, reset countdown (`Resets in ...`), and exact local reset time for each model group (e.g., Gemini Models 5-hour & weekly limits, Claude and GPT models 5-hour & weekly limits).
 - **Plan & AI Credits (`Quota` tab)**: Current subscription tier, available Google One AI credits, minimum credit threshold, and overage toggle status.
-- **Usage Statistics (`Stats` tab)**: OpenChamber-inspired historical analytics across `7d`, `30d`, `90d`, and `All` time ranges with project filtering:
+- **Usage Statistics (`Stats` tab)**: OpenChamber-inspired historical analytics across `7d`, `30d`, `90d`, and `All` time ranges with combined **Project** and **Model** filtering (by model series or specific variant, plus click-to-filter in the Models list):
   - **Summary Tiles**: Sessions (with subagent count), Prompts (with model steps & compactions), Tokens (`In · Out · Cache`), Public API Equivalent Cost (`Est. Cost`), Active days, and Longest streak.
+  - **Public API Pricing Card (when a model is selected)**: Displays benchmark unit rates (`Input`, `Output`, `Reasoning`, and `Cache read` per 1M tokens), per-segment cost breakdown, and prompt cache savings compared to uncached input.
   - **Activity Chart**: Interactive daily/weekly model step bar chart.
   - **Token Composition**: 4-segment stacked bar (`Input`, `Output`, `Reasoning`, `Cache reads`).
   - **Efficiency & Performance**: Cache hit rate, Est. cost / session, Est. cost / 1M tokens, Tokens / session, Steps / session, Reasoning share, Average output speed (`tok/s`), and Median TTFT.

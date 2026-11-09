@@ -216,6 +216,7 @@ if (isMain && process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) {
       return await computeUsageStatsReport({
         range: data?.range || '30d',
         project: data?.project || '__all__',
+        model: data?.model || '__all__',
         timezone: data?.tz || '',
         force,
         lsRequest,

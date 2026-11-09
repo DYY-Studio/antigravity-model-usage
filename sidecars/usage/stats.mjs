@@ -201,19 +201,26 @@ function formatSlugLabel(slug) {
 }
 
 function splitNameAndVariant(fullDisplayName, slug) {
-  const m = /^(.+?)\s*\(([^)]+)\)\s*$/.exec(fullDisplayName || '');
-  if (m) {
-    return { displayName: m[1].trim(), variant: m[2].trim() };
-  }
-  const parts = (slug || '').split('-');
+  const parts = (slug || '').split('-').filter(Boolean);
+  let familyID = slug || 'unknown';
+  let slugVariant = null;
   if (parts.length > 1 && EFFORT_LEVELS.has(parts[parts.length - 1].toLowerCase())) {
     const raw = parts[parts.length - 1];
+    familyID = parts.slice(0, -1).join('-');
+    slugVariant = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+  }
+  const m = /^(.+?)\s*\(([^)]+)\)\s*$/.exec(fullDisplayName || '');
+  if (m) {
+    return { displayName: m[1].trim(), variant: m[2].trim(), familyID };
+  }
+  if (slugVariant) {
     return {
-      displayName: fullDisplayName || formatSlugLabel(parts.slice(0, -1).join('-')),
-      variant: raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase(),
+      displayName: fullDisplayName || formatSlugLabel(familyID),
+      variant: slugVariant,
+      familyID,
     };
   }
-  return { displayName: fullDisplayName || formatSlugLabel(slug), variant: null };
+  return { displayName: fullDisplayName || formatSlugLabel(slug), variant: null, familyID };
 }
 
 function inferProviderID(slug, displayName, apiProviderEnum) {
@@ -231,31 +238,71 @@ function providerDisplayName(providerID) {
   return providerID || 'Unknown';
 }
 
-// Public API equivalent rates in USD per 1M tokens: { input, output (incl. reasoning), cacheRead }
+// Public API equivalent rates in USD per 1M tokens: { input, output (incl. reasoning), cacheRead, benchmark }
 function getModelPricingPerMillion(modelID, displayName, providerID) {
   const key = `${modelID || ''} ${displayName || ''}`.toLowerCase();
   if (key.includes('claude-opus') || key.includes('claude opus')) {
-    return { input: 5.0, output: 25.0, cacheRead: 0.5 };
+    return {
+      input: 5.0,
+      output: 25.0,
+      cacheRead: 0.5,
+      benchmark: 'Anthropic Claude Opus API',
+    };
   }
   if (key.includes('claude-sonnet') || key.includes('claude sonnet')) {
-    return { input: 3.0, output: 15.0, cacheRead: 0.3 };
+    return {
+      input: 3.0,
+      output: 15.0,
+      cacheRead: 0.3,
+      benchmark: 'Anthropic Claude Sonnet API',
+    };
   }
   if (key.includes('claude-haiku') || key.includes('claude haiku')) {
-    return { input: 1.0, output: 5.0, cacheRead: 0.1 };
+    return {
+      input: 1.0,
+      output: 5.0,
+      cacheRead: 0.1,
+      benchmark: 'Anthropic Claude Haiku API',
+    };
   }
   if (key.includes('gpt-oss')) {
-    return { input: 0.15, output: 0.6, cacheRead: 0.0375 };
+    return {
+      input: 0.15,
+      output: 0.6,
+      cacheRead: 0.0375,
+      benchmark: 'Open-weight 120B API equivalent',
+    };
   }
   if (key.includes('flash-lite') || key.includes('flash lite') || key.includes('tab_') || key.includes('chat_')) {
-    return { input: 0.1, output: 0.4, cacheRead: 0.025 };
+    return {
+      input: 0.1,
+      output: 0.4,
+      cacheRead: 0.025,
+      benchmark: 'Google Gemini Flash-Lite API',
+    };
   }
   if (key.includes('flash')) {
-    return { input: 0.3, output: 2.5, cacheRead: 0.075 };
+    return {
+      input: 0.3,
+      output: 2.5,
+      cacheRead: 0.075,
+      benchmark: 'Google Gemini Flash API',
+    };
   }
   if (key.includes('argon') || key.includes('pro') || providerID === 'google') {
-    return { input: 1.25, output: 10.0, cacheRead: 0.3125 };
+    return {
+      input: 1.25,
+      output: 10.0,
+      cacheRead: 0.3125,
+      benchmark: 'Google Gemini Pro API (<=200k tier)',
+    };
   }
-  return { input: 1.0, output: 5.0, cacheRead: 0.25 };
+  return {
+    input: 1.0,
+    output: 5.0,
+    cacheRead: 0.25,
+    benchmark: 'Standard public API benchmark',
+  };
 }
 
 function estimateTokensCost(tokens, pricing) {
@@ -374,7 +421,7 @@ function readConversationSummariesMap() {
 }
 
 function parseConversationDb(cid, dbPath) {
-  const stamp = `${fileStamp(dbPath)}|${fileStamp(`${dbPath}-wal`)}`;
+  const stamp = `v2|${fileStamp(dbPath)}|${fileStamp(`${dbPath}-wal`)}`;
   const cached = dbCache.get(cid);
   if (cached && cached.stamp === stamp) {
     return cached.parsed;
@@ -543,6 +590,38 @@ function parseConversationDb(cid, dbPath) {
         });
       }
     }
+
+    // Associate prompts with the subsequent model response and tools/compactions with the preceding model response.
+    let prevEnum = 0;
+    let prevProv = 0;
+    for (const ev of events) {
+      if (ev.kind === 'model') {
+        prevEnum = ev.modelEnum;
+        prevProv = ev.apiProvider;
+      } else {
+        ev._prevEnum = prevEnum;
+        ev._prevProv = prevProv;
+      }
+    }
+    let nextEnum = 0;
+    let nextProv = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev.kind === 'model') {
+        nextEnum = ev.modelEnum;
+        nextProv = ev.apiProvider;
+      } else if (ev.kind === 'prompt') {
+        ev.modelEnum = nextEnum || ev._prevEnum || 0;
+        ev.apiProvider = nextEnum ? nextProv : (ev._prevProv || 0);
+        delete ev._prevEnum;
+        delete ev._prevProv;
+      } else {
+        ev.modelEnum = ev._prevEnum || nextEnum || 0;
+        ev.apiProvider = ev._prevEnum ? ev._prevProv : (nextProv || 0);
+        delete ev._prevEnum;
+        delete ev._prevProv;
+      }
+    }
   } finally {
     try {
       db?.close();
@@ -621,9 +700,14 @@ function resolveModelInfo(modelEnum, apiProvider) {
   const slug = known?.slug || (modelEnum ? `model-${modelEnum}` : 'unknown');
   const fullDisp = known?.displayName || formatSlugLabel(slug);
   const providerID = known?.providerID || inferProviderID(slug, fullDisp, apiProvider);
-  const { displayName, variant } = splitNameAndVariant(fullDisp, slug);
+  const { displayName, variant, familyID } = splitNameAndVariant(fullDisp, slug);
   const pricing = getModelPricingPerMillion(slug, fullDisp, providerID);
+  const key = `${providerID}/${slug}`;
+  const familyKey = `family:${providerID}/${familyID}`;
   return {
+    key,
+    familyKey,
+    familyID,
     providerID,
     providerName: providerDisplayName(providerID),
     modelID: slug,
@@ -633,11 +717,56 @@ function resolveModelInfo(modelEnum, apiProvider) {
   };
 }
 
+function matchesModelFilter(mInfo, modelFilter) {
+  if (!modelFilter) return true;
+  if (!mInfo) return false;
+  if (modelFilter.startsWith('family:')) {
+    return mInfo.familyKey === modelFilter;
+  }
+  return mInfo.key === modelFilter || mInfo.modelID === modelFilter;
+}
+
+function resolveSelectedModelSpec(modelFilter, models) {
+  if (!modelFilter) return null;
+  const isFamily = modelFilter.startsWith('family:');
+  let matched = models.find((m) => (isFamily ? m.familyKey === modelFilter : m.key === modelFilter || m.modelID === modelFilter));
+  if (!matched) {
+    for (const [enumId, info] of observedEnumModels.entries()) {
+      const mInfo = resolveModelInfo(enumId, 0);
+      if (matchesModelFilter(mInfo, modelFilter)) {
+        matched = { ...mInfo, _pricing: mInfo.pricing };
+        break;
+      }
+    }
+  }
+  if (!matched) return null;
+  const pricing = matched.pricing || matched._pricing || getModelPricingPerMillion(matched.modelID, matched.displayName, matched.providerID);
+  const fullLabel = isFamily
+    ? `${matched.displayName} (All variants)`
+    : matched.variant
+      ? `${matched.displayName} (${matched.variant})`
+      : matched.displayName;
+  return {
+    filterKey: modelFilter,
+    isFamily,
+    providerID: matched.providerID,
+    providerName: matched.providerName,
+    modelID: isFamily ? matched.familyID : matched.modelID,
+    familyID: matched.familyID,
+    familyKey: matched.familyKey,
+    displayName: matched.displayName,
+    variant: isFamily ? 'All variants' : matched.variant,
+    fullLabel,
+    pricing,
+  };
+}
+
 // --- Main Report Computation -------------------------------------------------
 
 export async function computeUsageStatsReport(options = {}) {
   const rangeKey = RANGE_DAYS[options.range] ? options.range : 'all';
   const projectFilter = options.project && options.project !== '__all__' ? String(options.project) : null;
+  const modelFilter = options.model && options.model !== '__all__' ? String(options.model) : null;
   const timeZone = options.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const force = Boolean(options.force);
 
@@ -679,13 +808,13 @@ export async function computeUsageStatsReport(options = {}) {
     total: 0,
   };
 
-  let totalCost = 0;
+  let filteredCost = 0;
   let timedOutTokens = 0;
   let totalGenDurSec = 0;
   const ttftSamples = [];
 
   const activityMap = new Map(); // YYYY-MM-DD -> steps
-  const modelMap = new Map(); // modelKey -> entry
+  const modelMap = new Map(); // modelKey -> entry (across all models in range + project)
   const toolMap = new Map(); // toolName -> entry
   const toolTotals = {
     calls: 0,
@@ -713,34 +842,18 @@ export async function computeUsageStatsReport(options = {}) {
       if (ev.tsMs >= window.to) continue;
       if (window.from !== null && ev.tsMs < window.from) continue;
 
-      activeInWindow = true;
-      if (earliestEventMs === null || ev.tsMs < earliestEventMs) {
-        earliestEventMs = ev.tsMs;
-      }
+      const mInfo = ev.modelEnum ? resolveModelInfo(ev.modelEnum, ev.apiProvider) : null;
 
-      if (ev.kind === 'prompt') {
-        prompts += 1;
-      } else if (ev.kind === 'compaction') {
-        compactions += 1;
-      } else if (ev.kind === 'model') {
-        steps += 1;
-        if (ev.isCompaction) compactions += 1;
-
+      // Always record model usage into modelMap for the current (range, project)
+      // so the Models selector and comparison list stay complete when a model is selected.
+      if (ev.kind === 'model' && mInfo) {
         const evTotal = ev.input + ev.output + ev.reasoning + ev.cacheRead;
-        tokens.input += ev.input;
-        tokens.output += ev.output;
-        tokens.reasoning += ev.reasoning;
-        tokens.cacheRead += ev.cacheRead;
-        tokens.total += evTotal;
-
-        const dayKey = dayKeyOf(ev.tsMs);
-        activityMap.set(dayKey, (activityMap.get(dayKey) || 0) + 1);
-
-        const mInfo = resolveModelInfo(ev.modelEnum, ev.apiProvider);
-        const mKey = `${mInfo.providerID}/${mInfo.modelID}`;
-        let mEntry = modelMap.get(mKey);
+        let mEntry = modelMap.get(mInfo.key);
         if (!mEntry) {
           mEntry = {
+            key: mInfo.key,
+            familyKey: mInfo.familyKey,
+            familyID: mInfo.familyID,
             providerID: mInfo.providerID,
             providerName: mInfo.providerName,
             modelID: mInfo.modelID,
@@ -753,7 +866,7 @@ export async function computeUsageStatsReport(options = {}) {
             _durSec: 0,
             _pricing: mInfo.pricing,
           };
-          modelMap.set(mKey, mEntry);
+          modelMap.set(mInfo.key, mEntry);
         }
         mEntry.steps += 1;
         mEntry.tokens.input += ev.input;
@@ -761,13 +874,48 @@ export async function computeUsageStatsReport(options = {}) {
         mEntry.tokens.reasoning += ev.reasoning;
         mEntry.tokens.cacheRead += ev.cacheRead;
         mEntry.tokens.total += evTotal;
+        if (ev.durSec > 0) {
+          mEntry._timedOut += ev.output + ev.reasoning;
+          mEntry._durSec += ev.durSec;
+        }
+      }
+
+      if (modelFilter && !matchesModelFilter(mInfo, modelFilter)) {
+        continue;
+      }
+
+      activeInWindow = true;
+      if (earliestEventMs === null || ev.tsMs < earliestEventMs) {
+        earliestEventMs = ev.tsMs;
+      }
+
+      if (ev.kind === 'prompt') {
+        prompts += 1;
+      } else if (ev.kind === 'compaction') {
+        compactions += 1;
+      } else if (ev.kind === 'model' && mInfo) {
+        steps += 1;
+        if (ev.isCompaction) compactions += 1;
+
+        const evTotal = ev.input + ev.output + ev.reasoning + ev.cacheRead;
+        tokens.input += ev.input;
+        tokens.output += ev.output;
+        tokens.reasoning += ev.reasoning;
+        tokens.cacheRead += ev.cacheRead;
+        tokens.total += evTotal;
+
+        filteredCost += estimateTokensCost(
+          { input: ev.input, output: ev.output, reasoning: ev.reasoning, cacheRead: ev.cacheRead },
+          mInfo.pricing
+        );
+
+        const dayKey = dayKeyOf(ev.tsMs);
+        activityMap.set(dayKey, (activityMap.get(dayKey) || 0) + 1);
 
         if (ev.durSec > 0) {
           const outProduced = ev.output + ev.reasoning;
           timedOutTokens += outProduced;
           totalGenDurSec += ev.durSec;
-          mEntry._timedOut += outProduced;
-          mEntry._durSec += ev.durSec;
           if (ev.ttftMs !== null) {
             ttftSamples.push(ev.ttftMs);
           }
@@ -811,8 +959,10 @@ export async function computeUsageStatsReport(options = {}) {
 
   const models = Array.from(modelMap.values()).map((m) => {
     const cost = estimateTokensCost(m.tokens, m._pricing);
-    totalCost += cost;
     return {
+      key: m.key,
+      familyKey: m.familyKey,
+      familyID: m.familyID,
       providerID: m.providerID,
       providerName: m.providerName,
       modelID: m.modelID,
@@ -822,9 +972,67 @@ export async function computeUsageStatsReport(options = {}) {
       tokens: m.tokens,
       cost: Number(cost.toFixed(4)),
       avgOutputTps: m._durSec > 0 ? Number((m._timedOut / m._durSec).toFixed(1)) : null,
+      pricing: m._pricing,
     };
   });
   models.sort((a, b) => b.tokens.total - a.tokens.total);
+
+  const familyMap = new Map();
+  for (const m of models) {
+    let f = familyMap.get(m.familyKey);
+    if (!f) {
+      f = {
+        familyKey: m.familyKey,
+        familyID: m.familyID,
+        providerID: m.providerID,
+        providerName: m.providerName,
+        displayName: m.displayName,
+        variantsCount: 0,
+        tokensTotal: 0,
+      };
+      familyMap.set(m.familyKey, f);
+    }
+    f.variantsCount += 1;
+    f.tokensTotal += m.tokens.total;
+  }
+  const modelFamilies = Array.from(familyMap.values()).sort((a, b) => b.tokensTotal - a.tokensTotal);
+
+  let selectedModel = null;
+  if (modelFilter) {
+    const spec = resolveSelectedModelSpec(modelFilter, models);
+    if (spec) {
+      const p = spec.pricing;
+      const cacheDiscountPct = p.input > 0 ? Math.round((1 - p.cacheRead / p.input) * 100) : 0;
+      const inputCost = (tokens.input * p.input) / 1_000_000;
+      const outputCost = (tokens.output * p.output) / 1_000_000;
+      const reasoningCost = (tokens.reasoning * p.output) / 1_000_000;
+      const cacheReadCost = (tokens.cacheRead * p.cacheRead) / 1_000_000;
+      const cacheSaved = (tokens.cacheRead * Math.max(0, p.input - p.cacheRead)) / 1_000_000;
+      const uncachedTotal =
+        ((tokens.input + tokens.cacheRead) * p.input + (tokens.output + tokens.reasoning) * p.output) / 1_000_000;
+
+      selectedModel = {
+        ...spec,
+        pricing: {
+          input: p.input,
+          output: p.output,
+          cacheRead: p.cacheRead,
+          benchmark: p.benchmark,
+          cacheDiscountPct,
+        },
+        costBreakdown: {
+          input: Number(inputCost.toFixed(4)),
+          output: Number(outputCost.toFixed(4)),
+          reasoning: Number(reasoningCost.toFixed(4)),
+          outputTotal: Number((outputCost + reasoningCost).toFixed(4)),
+          cacheRead: Number(cacheReadCost.toFixed(4)),
+          total: Number(filteredCost.toFixed(4)),
+          cacheSaved: Number(cacheSaved.toFixed(4)),
+          uncachedTotal: Number(uncachedTotal.toFixed(4)),
+        },
+      };
+    }
+  }
 
   const toolUsage = Array.from(toolMap.values())
     .map((t) => ({
@@ -844,13 +1052,16 @@ export async function computeUsageStatsReport(options = {}) {
     rangeKey,
     project: projectFilter || '__all__',
     projects: Array.from(projectsMap.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    model: modelFilter || '__all__',
+    modelFamilies,
+    selectedModel,
     sessions,
     subagents,
     prompts,
     steps,
     compactions,
     tokens,
-    cost: Number(totalCost.toFixed(2)),
+    cost: Number(filteredCost.toFixed(2)),
     performance: {
       avgOutputTps: totalGenDurSec > 0 ? Number((timedOutTokens / totalGenDurSec).toFixed(1)) : null,
       ttftP50Ms: computeMedian(ttftSamples),
