@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Response, SidecarApp } from 'sidecar_sdk';
+import { computeUsageStatsReport } from './stats.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GEMINI_DIR = process.env.ANTIGRAVITY_GEMINI_DIR || join(homedir(), '.gemini');
@@ -204,6 +205,21 @@ if (isMain && process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) {
     try {
       const force = data?.force === '1' || data?.force === 'true' || data?.force === true;
       return await fetchUsageReport(force);
+    } catch (err) {
+      return { error: 'failed', message: err.message };
+    }
+  }, 'GET');
+
+  app.api('/api/stats', async (data) => {
+    try {
+      const force = data?.force === '1' || data?.force === 'true' || data?.force === true;
+      return await computeUsageStatsReport({
+        range: data?.range || '30d',
+        project: data?.project || '__all__',
+        timezone: data?.tz || '',
+        force,
+        lsRequest,
+      });
     } catch (err) {
       return { error: 'failed', message: err.message };
     }

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
 <title>Model Usage</title>
 <script src="/preload.js"></script>
 <style>
@@ -25,6 +26,7 @@
     --c-warn: #d29922;
     --c-danger: #cf222e;
     --c-accent: #0969da;
+    --c-purple: #8250df;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -36,6 +38,7 @@
       --c-warn: #d29922;
       --c-danger: #f85149;
       --c-accent: #58a6ff;
+      --c-purple: #a371f7;
     }
   }
 
@@ -47,6 +50,7 @@
       --c-ok: light-dark(#2da44e, #3fb950);
       --c-danger: light-dark(#cf222e, #f85149);
       --c-accent: light-dark(#0969da, #58a6ff);
+      --c-purple: light-dark(#8250df, #a371f7);
     }
   }
 
@@ -54,7 +58,12 @@
     --fg: var(--foreground);
     --dim: var(--muted-foreground);
     --line: var(--border);
-    --track: color-mix(in srgb, var(--dim) 24%, transparent);
+    --track: color-mix(in srgb, var(--dim) 22%, transparent);
+    --surface: color-mix(in srgb, var(--fg) 3.5%, transparent);
+    --c-seg-in: var(--c-accent);
+    --c-seg-out: var(--c-ok);
+    --c-seg-think: var(--c-purple);
+    --c-seg-cache: var(--c-warn);
     scrollbar-width: thin;
     scrollbar-color: var(--dim) transparent;
   }
@@ -76,8 +85,9 @@
   main { padding: 12px 14px 18px; }
   .num { font-variant-numeric: tabular-nums; }
   .dim { color: var(--dim); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
-  /* Header */
+  /* Header & Main Tabs */
   .top {
     display: flex;
     align-items: center;
@@ -89,7 +99,7 @@
   .title-wrap {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     min-width: 0;
   }
   .live {
@@ -101,11 +111,31 @@
   }
   .live.on { background: var(--c-ok); }
   .live.err { background: var(--c-danger); }
-  .panel-title {
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
+
+  .tab-bar {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
   }
+  .tab-btn {
+    border: none;
+    border-radius: 4px;
+    padding: 2px 9px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--dim);
+    background: transparent;
+    cursor: pointer;
+  }
+  .tab-btn:hover:not(.active) { color: var(--fg); }
+  .tab-btn.active {
+    color: var(--fg);
+    background: color-mix(in srgb, var(--fg) 10%, transparent);
+    font-weight: 600;
+  }
+
   button {
     font: inherit;
     font-size: 12px;
@@ -141,10 +171,11 @@
   }
   .sec-head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
   }
   h2 {
     margin: 0;
@@ -155,6 +186,10 @@
   .sec-sub {
     margin: 0 0 8px;
     font-size: 11.5px;
+    color: var(--dim);
+  }
+  .sec-caption {
+    font-size: 11px;
     color: var(--dim);
   }
 
@@ -191,6 +226,7 @@
     border-radius: 4px;
     padding: 0 5px;
     line-height: 1.5;
+    flex: none;
   }
   .tag.ok { color: var(--c-ok); border-color: var(--c-ok); }
   .bucket-stats {
@@ -263,8 +299,275 @@
   }
   a.ext-link:hover { text-decoration: underline; }
 
+  /* Stats View Controls */
+  .stats-toolbar {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .chip-group {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1.5px;
+    gap: 1px;
+  }
+  .chip-btn {
+    border: none;
+    border-radius: 3.5px;
+    padding: 2px 7px;
+    font-size: 11px;
+    color: var(--dim);
+    background: transparent;
+    cursor: pointer;
+  }
+  .chip-btn:hover:not(.active) { color: var(--fg); }
+  .chip-btn.active {
+    color: var(--fg);
+    background: color-mix(in srgb, var(--fg) 10%, transparent);
+    font-weight: 600;
+  }
+  select.proj-select {
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--fg);
+    background: var(--background);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 2.5px 6px;
+    max-width: 170px;
+    text-overflow: ellipsis;
+  }
+
+  /* Stat Tiles Grid */
+  .tile-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin-top: 10px;
+  }
+  @media (min-width: 480px) {
+    .tile-grid.cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .tile-grid.cols-4 {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  .stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 7px 9px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    min-width: 0;
+  }
+  .tile-label {
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tile-val {
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tile-hint {
+    font-size: 10.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Activity Bar Chart */
+  .card-box {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 9px 10px 8px;
+    background: var(--surface);
+  }
+  .chart-wrap {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    height: 86px;
+    gap: 1px;
+    outline: none;
+    padding-top: 18px;
+  }
+  .chart-col {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    cursor: pointer;
+  }
+  .chart-bar {
+    width: 100%;
+    border-radius: 2px 2px 0 0;
+    background: var(--c-accent);
+    transition: opacity 0.1s ease;
+  }
+  .chart-bar.empty-bar {
+    background: var(--track);
+    height: 1px !important;
+  }
+  .chart-bar.dimmed { opacity: 0.35; }
+  .chart-tooltip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    font-size: 11px;
+    color: var(--fg);
+    font-weight: 500;
+    text-align: center;
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chart-axis {
+    margin-top: 5px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: var(--dim);
+  }
+
+  /* Token Composition Stacked Bar */
+  .stack-track {
+    display: flex;
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--track);
+  }
+  .seg-in { background: var(--c-seg-in); }
+  .seg-out { background: var(--c-seg-out); }
+  .seg-think { background: var(--c-seg-think); }
+  .seg-cache { background: var(--c-seg-cache); }
+
+  .legend-grid {
+    margin-top: 8px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px 10px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    min-width: 0;
+  }
+  .legend-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .legend-name {
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .legend-val {
+    margin-left: auto;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* Models & Tools Lists */
+  .item-list {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .item-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .item-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+    min-width: 0;
+  }
+  .item-title {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+  .prov-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    border: 1px solid var(--line);
+    color: var(--dim);
+    flex: none;
+    transform: translateY(-1px);
+  }
+  .item-name {
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .item-meta {
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+    flex: none;
+  }
+  .thin-track {
+    display: flex;
+    width: 100%;
+    height: 5px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--track);
+  }
+  .more-btn {
+    margin-top: 8px;
+    width: 100%;
+    font-size: 11.5px;
+    padding: 4px 8px;
+    text-align: center;
+    color: var(--dim);
+  }
+
   .empty {
-    margin: 40px 8px;
+    margin: 36px 8px;
     text-align: center;
     color: var(--dim);
   }
@@ -292,12 +595,35 @@
 (() => {
   const POLL_MS = 15000;
   const TICK_MS = 30000;
+  const MAX_DAILY_BARS = 92;
   const doFetch = (window.sidecar && window.sidecar.fetch) || fetch;
   const main = document.getElementById('main');
 
-  let currentData = null;
-  let isRefreshing = false;
-  let staleWarning = '';
+  // Navigation & state
+  let activeTab = 'quota'; // 'quota' | 'stats'
+
+  // Quota state
+  let quotaData = null;
+  let quotaRefreshing = false;
+  let quotaWarning = '';
+
+  // Stats state & cache (keyed by range::project, like OpenChamber's usageStatsStore)
+  let statsRange = '30d';
+  let statsProject = '__all__';
+  let modelDimension = 'tokens'; // 'tokens' | 'cost' | 'steps'
+  let showAllTools = false;
+  let activeBarIdx = null;
+  const statsCache = new Map(); // key -> { data, fetchedAt }
+  let statsLoading = false;
+  let statsError = '';
+
+  const fmtInt = new Intl.NumberFormat('en-US');
+  const fmtCompact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+  const fmtDec = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
+  const fmtPct = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 });
+  const fmtCost = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+  const fmtDay = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
+  const fmtDayYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   function el(tag, attrs = {}, children = []) {
     const node = document.createElement(tag);
@@ -315,7 +641,63 @@
     return node;
   }
 
-  function formatPct(fraction) {
+  function statsKey(range = statsRange, project = statsProject) {
+    return `${range}::${project}`;
+  }
+
+  // --- Shared Header ---------------------------------------------------------
+
+  function buildHeader() {
+    const isBusy = activeTab === 'quota' ? quotaRefreshing : statsLoading;
+    const hasWarn = activeTab === 'quota' ? Boolean(quotaWarning) : Boolean(statsError);
+    const liveClass = hasWarn ? 'live err' : 'live on';
+
+    const quotaBtn = el('button', {
+      type: 'button',
+      className: `tab-btn${activeTab === 'quota' ? ' active' : ''}`,
+      textContent: 'Quota',
+    });
+    quotaBtn.addEventListener('click', () => {
+      if (activeTab === 'quota') return;
+      activeTab = 'quota';
+      render();
+      if (!quotaData) refreshQuota(false);
+    });
+
+    const statsBtn = el('button', {
+      type: 'button',
+      className: `tab-btn${activeTab === 'stats' ? ' active' : ''}`,
+      textContent: 'Stats',
+    });
+    statsBtn.addEventListener('click', () => {
+      if (activeTab === 'stats') return;
+      activeTab = 'stats';
+      render();
+      loadStats(false);
+    });
+
+    const refreshBtn = el('button', {
+      type: 'button',
+      textContent: isBusy ? 'Refreshing…' : 'Refresh',
+    });
+    if (isBusy) refreshBtn.disabled = true;
+    refreshBtn.addEventListener('click', () => {
+      if (activeTab === 'quota') refreshQuota(true);
+      else loadStats(true);
+    });
+
+    return el('div', { className: 'top' }, [
+      el('div', { className: 'title-wrap' }, [
+        el('span', { className: liveClass, title: (hasWarn && (quotaWarning || statsError)) || 'Live' }),
+        el('div', { className: 'tab-bar', role: 'tablist' }, [quotaBtn, statsBtn]),
+      ]),
+      refreshBtn,
+    ]);
+  }
+
+  // --- Quota Tab Builders ----------------------------------------------------
+
+  function formatQuotaPct(fraction) {
     if (typeof fraction !== 'number' || Number.isNaN(fraction)) return '0%';
     const pct = Math.max(0, Math.min(100, fraction * 100));
     if (pct === 0 || pct === 100) return `${Math.round(pct)}%`;
@@ -375,7 +757,7 @@
 
     const statsNode = el('div', { className: 'bucket-stats num' }, [
       el('span', { className: 'pct-used', textContent: formatUsedPct(frac) }),
-      el('span', { className: 'pct-main', textContent: formatPct(frac) }),
+      el('span', { className: 'pct-main', textContent: formatQuotaPct(frac) }),
     ]);
 
     const barTrack = el('div', { className: 'bar-track' }, [
@@ -495,29 +877,18 @@
     return el('section', {}, children);
   }
 
-  function render() {
-    if (!currentData) return;
-    const r = currentData;
+  function buildQuotaNodes() {
+    if (!quotaData) {
+      if (quotaWarning) {
+        return [el('div', { className: 'notice error', textContent: `Failed to load usage data: ${quotaWarning}` })];
+      }
+      return [el('p', { className: 'empty', textContent: 'Loading usage data…' })];
+    }
+
+    const r = quotaData;
     const nodes = [];
-
-    const refreshBtn = el('button', {
-      type: 'button',
-      textContent: isRefreshing ? 'Refreshing…' : 'Refresh',
-    });
-    if (isRefreshing) refreshBtn.disabled = true;
-    refreshBtn.addEventListener('click', () => refresh(true));
-
-    const liveClass = staleWarning ? 'live err' : 'live on';
-    nodes.push(el('div', { className: 'top' }, [
-      el('div', { className: 'title-wrap' }, [
-        el('span', { className: liveClass, title: staleWarning || 'Live' }),
-        el('span', { className: 'panel-title', textContent: 'Models & Usage' }),
-      ]),
-      refreshBtn,
-    ]));
-
     const allWarnings = [...(Array.isArray(r.warnings) ? r.warnings : [])];
-    if (staleWarning) allWarnings.unshift(staleWarning);
+    if (quotaWarning) allWarnings.unshift(quotaWarning);
     for (const w of allWarnings) {
       nodes.push(el('div', { className: 'notice', textContent: w }));
     }
@@ -548,65 +919,538 @@
       el('span', { textContent: updatedTime ? `Updated ${updatedTime}` : '' }),
     ]));
     nodes.push(el('footer', {}, footChildren));
-
-    main.replaceChildren(...nodes);
+    return nodes;
   }
 
-  function renderFatalError(msg) {
-    currentData = null;
-    const retryBtn = el('button', { type: 'button', textContent: 'Retry' });
-    retryBtn.addEventListener('click', () => refresh(true));
-    main.replaceChildren(
-      el('div', { className: 'top' }, [
-        el('div', { className: 'title-wrap' }, [
-          el('span', { className: 'live err' }),
-          el('span', { className: 'panel-title', textContent: 'Models & Usage' }),
-        ]),
-        retryBtn,
+  // --- Stats Tab Helpers & Builders ------------------------------------------
+
+  function parseDayStr(key) {
+    const [y, m, d] = key.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  }
+
+  function dateKeyOf(date) {
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${date.getFullYear()}-${m}-${d}`;
+  }
+
+  function buildActivitySeries(stats) {
+    const stepsByDay = new Map((stats.activity || []).map((d) => [d.date, d.steps]));
+    const from = new Date(stats.range.from);
+    const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    const last = new Date(Math.max(stats.range.from, stats.range.to - 1));
+    const lastKey = dateKeyOf(last);
+    const days = [];
+    for (let guard = 0; guard < 3650; guard++) {
+      const key = dateKeyOf(cursor);
+      days.push({ start: key, end: key, steps: stepsByDay.get(key) || 0 });
+      if (key >= lastKey) break;
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    if (days.length <= MAX_DAILY_BARS) {
+      const max = days.reduce((m, d) => Math.max(m, d.steps), 0);
+      return { unit: 'day', bars: days, max };
+    }
+
+    const weeks = [];
+    for (let i = 0; i < days.length; i += 7) {
+      const chunk = days.slice(i, i + 7);
+      const sum = chunk.reduce((acc, d) => acc + d.steps, 0);
+      weeks.push({
+        start: chunk[0].start,
+        end: chunk[chunk.length - 1].end,
+        steps: sum,
+      });
+    }
+    const max = weeks.reduce((m, w) => Math.max(m, w.steps), 0);
+    return { unit: 'week', bars: weeks, max };
+  }
+
+  function formatDurationMs(ms) {
+    if (typeof ms !== 'number' || Number.isNaN(ms)) return '—';
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const sec = ms / 1000;
+    if (sec < 60) return `${sec.toFixed(1)} s`;
+    const mins = Math.floor(sec / 60);
+    const remSec = Math.round(sec % 60);
+    return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
+  }
+
+  function buildStatTile(label, value, hint = '') {
+    const children = [
+      el('span', { className: 'tile-label', textContent: label, title: label }),
+      el('span', { className: 'tile-val num', textContent: value, title: value }),
+    ];
+    if (hint) {
+      children.push(el('span', { className: 'tile-hint num', textContent: hint, title: hint }));
+    }
+    return el('div', { className: 'stat-tile' }, children);
+  }
+
+  function getTokenSegments(tokens) {
+    return [
+      { key: 'in', label: 'Input', cls: 'seg-in', value: tokens.input || 0 },
+      { key: 'out', label: 'Output', cls: 'seg-out', value: tokens.output || 0 },
+      { key: 'think', label: 'Reasoning', cls: 'seg-think', value: tokens.reasoning || 0 },
+      { key: 'cache', label: 'Cache reads', cls: 'seg-cache', value: tokens.cacheRead || 0 },
+    ];
+  }
+
+  function buildStatsToolbar(projects) {
+    const ranges = [
+      { value: '7d', label: '7d' },
+      { value: '30d', label: '30d' },
+      { value: '90d', label: '90d' },
+      { value: 'all', label: 'All' },
+    ];
+    const rangeButtons = ranges.map((r) => {
+      const btn = el('button', {
+        type: 'button',
+        className: `chip-btn${statsRange === r.value ? ' active' : ''}`,
+        textContent: r.label,
+      });
+      btn.addEventListener('click', () => {
+        if (statsRange === r.value) return;
+        statsRange = r.value;
+        activeBarIdx = null;
+        render();
+        loadStats(false);
+      });
+      return btn;
+    });
+
+    const selectEl = el('select', { className: 'proj-select', 'aria-label': 'Project filter' }, [
+      el('option', { value: '__all__', textContent: 'All projects' }),
+      ...(Array.isArray(projects) ? projects : []).map((p) =>
+        el('option', { value: p.id, textContent: p.name, title: p.path })
+      ),
+    ]);
+    selectEl.value = statsProject;
+    selectEl.addEventListener('change', (e) => {
+      statsProject = e.target.value;
+      activeBarIdx = null;
+      render();
+      loadStats(false);
+    });
+
+    return el('div', { className: 'stats-toolbar' }, [
+      el('div', { className: 'chip-group', role: 'group', 'aria-label': 'Time range' }, rangeButtons),
+      selectEl,
+    ]);
+  }
+
+  function buildActivitySection(stats) {
+    const series = buildActivitySeries(stats);
+    const weekly = series.unit === 'week';
+    const title = weekly ? 'Weekly activity' : 'Daily activity';
+    const caption = weekly ? 'Model steps per week' : 'Model steps per day';
+    const count = series.bars.length;
+
+    const describeBar = (bar) => {
+      const dateStr = bar.start === bar.end
+        ? fmtDayYear.format(parseDayStr(bar.start))
+        : `${fmtDay.format(parseDayStr(bar.start))} – ${fmtDayYear.format(parseDayStr(bar.end))}`;
+      return `${dateStr} · steps: ${fmtInt.format(bar.steps)}`;
+    };
+
+    const tooltipNode = el('div', {
+      className: 'chart-tooltip num',
+      textContent: activeBarIdx !== null && series.bars[activeBarIdx]
+        ? describeBar(series.bars[activeBarIdx])
+        : '',
+    });
+
+    const barCols = series.bars.map((bar, idx) => {
+      const hPct = series.max > 0 ? Math.max(bar.steps > 0 ? 5 : 0, (bar.steps / series.max) * 100) : 0;
+      const barEl = el('div', {
+        className: `chart-bar${bar.steps === 0 ? ' empty-bar' : ''}${activeBarIdx !== null && activeBarIdx !== idx ? ' dimmed' : ''}`,
+        style: bar.steps > 0 ? `height: ${hPct.toFixed(1)}%` : '',
+      });
+      const colEl = el('div', { className: 'chart-col' }, [barEl]);
+      colEl.addEventListener('pointerenter', () => {
+        activeBarIdx = idx;
+        tooltipNode.textContent = describeBar(bar);
+        barCols.forEach((c, i) => {
+          c.firstChild.classList.toggle('dimmed', i !== idx);
+        });
+      });
+      return colEl;
+    });
+
+    const chartWrap = el('div', {
+      className: 'chart-wrap',
+      tabIndex: 0,
+      role: 'group',
+      'aria-label': title,
+    }, [tooltipNode, ...barCols]);
+
+    chartWrap.addEventListener('pointerleave', () => {
+      activeBarIdx = null;
+      tooltipNode.textContent = '';
+      barCols.forEach((c) => c.firstChild.classList.remove('dimmed'));
+    });
+
+    const first = series.bars[0];
+    const last = series.bars[count - 1];
+    const axis = first && last
+      ? el('div', { className: 'chart-axis num' }, [
+          el('span', { textContent: fmtDayYear.format(parseDayStr(first.start)) }),
+          el('span', { textContent: fmtDayYear.format(parseDayStr(last.end)) }),
+        ])
+      : null;
+
+    return el('section', {}, [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: title }),
+        el('span', { className: 'sec-caption', textContent: caption }),
       ]),
-      el('div', { className: 'notice error', textContent: `Failed to load usage data: ${msg}` })
-    );
+      el('div', { className: 'card-box' }, [chartWrap, axis]),
+    ]);
   }
 
-  async function refresh(force = false) {
+  function buildTokenCompositionSection(stats) {
+    const total = stats.tokens?.total || 0;
+    if (total <= 0) return null;
+    const segments = getTokenSegments(stats.tokens);
+
+    const trackSlices = segments
+      .filter((s) => s.value > 0)
+      .map((s) => el('div', {
+        className: s.cls,
+        style: `width: ${((s.value / total) * 100).toFixed(2)}%`,
+      }));
+
+    const legendItems = segments.map((s) => {
+      const share = total > 0 ? fmtPct.format(s.value / total) : '0%';
+      return el('div', { className: 'legend-item num' }, [
+        el('span', { className: `legend-dot ${s.cls}` }),
+        el('span', { className: 'legend-name', textContent: s.label }),
+        el('span', { className: 'legend-val', textContent: `${fmtCompact.format(s.value)} · ${share}` }),
+      ]);
+    });
+
+    return el('section', {}, [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: 'Token composition' }),
+      ]),
+      el('div', { className: 'card-box' }, [
+        el('div', { className: 'stack-track' }, trackSlices),
+        el('div', { className: 'legend-grid' }, legendItems),
+      ]),
+    ]);
+  }
+
+  function buildEfficiencySection(stats) {
+    const t = stats.tokens || {};
+    const promptDenom = (t.input || 0) + (t.cacheRead || 0);
+    const hitRate = promptDenom > 0 ? fmtPct.format((t.cacheRead || 0) / promptDenom) : '—';
+    const costPerSess = stats.sessions > 0 ? fmtCost.format(stats.cost / stats.sessions) : '—';
+    const costPerM = t.total > 0 ? fmtCost.format((stats.cost / t.total) * 1e6) : '—';
+    const tokPerSess = stats.sessions > 0 ? fmtCompact.format(t.total / stats.sessions) : '—';
+    const stepsPerSess = stats.sessions > 0 ? fmtDec.format(stats.steps / stats.sessions) : '—';
+    const outTotal = (t.output || 0) + (t.reasoning || 0);
+    const thinkShare = outTotal > 0 ? fmtPct.format((t.reasoning || 0) / outTotal) : '—';
+    const avgTps = stats.performance?.avgOutputTps ? `${stats.performance.avgOutputTps} tok/s` : '—';
+    const medTtft = stats.performance?.ttftP50Ms ? formatDurationMs(stats.performance.ttftP50Ms) : '—';
+
+    return el('section', {}, [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: 'Efficiency & performance' }),
+      ]),
+      el('div', { className: 'tile-grid cols-4' }, [
+        buildStatTile('Cache hit rate', hitRate),
+        buildStatTile('Est. cost / session', costPerSess),
+        buildStatTile('Est. cost / 1M tok', costPerM),
+        buildStatTile('Tokens / session', tokPerSess),
+        buildStatTile('Steps / session', stepsPerSess),
+        buildStatTile('Reasoning share', thinkShare),
+        buildStatTile('Avg output speed', avgTps),
+        buildStatTile('Median TTFT', medTtft),
+      ]),
+    ]);
+  }
+
+  function buildModelsSection(stats) {
+    const models = Array.isArray(stats.models) ? stats.models : [];
+    const dims = [
+      { value: 'tokens', label: 'Tokens' },
+      { value: 'cost', label: 'Cost' },
+      { value: 'steps', label: 'Steps' },
+    ];
+    const dimButtons = dims.map((d) => {
+      const btn = el('button', {
+        type: 'button',
+        className: `chip-btn${modelDimension === d.value ? ' active' : ''}`,
+        textContent: d.label,
+      });
+      btn.addEventListener('click', () => {
+        if (modelDimension === d.value) return;
+        modelDimension = d.value;
+        render();
+      });
+      return btn;
+    });
+
+    const valOf = (m) => (modelDimension === 'tokens' ? m.tokens.total : modelDimension === 'cost' ? m.cost : m.steps);
+    const ranked = [...models].sort((a, b) => valOf(b) - valOf(a));
+    const maxVal = ranked.reduce((peak, m) => Math.max(peak, valOf(m)), 0);
+
+    const listItems = ranked.map((m) => {
+      const sharePct = maxVal > 0 ? (valOf(m) / maxVal) * 100 : 0;
+      const provInitial = (m.providerName || 'G').charAt(0).toUpperCase();
+      const rightText = modelDimension === 'steps'
+        ? `${fmtInt.format(m.steps)} · ${fmtCost.format(m.cost)}`
+        : `${fmtCompact.format(m.tokens.total)} · ${fmtCost.format(m.cost)}`;
+      const tpsHint = m.avgOutputTps ? ` · ${m.avgOutputTps} tok/s` : '';
+
+      let barInner;
+      if (modelDimension === 'tokens' && m.tokens.total > 0) {
+        const segs = getTokenSegments(m.tokens).filter((s) => s.value > 0);
+        barInner = el('div', {
+          style: `display:flex;height:100%;width:${sharePct.toFixed(1)}%`,
+        }, segs.map((s) => el('div', {
+          className: s.cls,
+          style: `height:100%;width:${((s.value / m.tokens.total) * 100).toFixed(2)}%`,
+        })));
+      } else {
+        barInner = el('div', {
+          className: 'seg-in',
+          style: `height:100%;width:${sharePct.toFixed(1)}%`,
+        });
+      }
+
+      return el('li', {
+        className: 'item-row',
+        title: `${m.providerName} · ${m.modelID}${tpsHint}`,
+      }, [
+        el('div', { className: 'item-head' }, [
+          el('div', { className: 'item-title' }, [
+            el('span', { className: 'prov-badge', textContent: provInitial }),
+            el('span', { className: 'item-name', textContent: m.displayName }),
+            m.variant ? el('span', { className: 'tag', textContent: m.variant }) : null,
+          ]),
+          el('span', { className: 'item-meta num', textContent: rightText }),
+        ]),
+        el('div', { className: 'thin-track' }, [barInner]),
+      ]);
+    });
+
+    return el('section', {}, [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: 'Models' }),
+        models.length > 0 ? el('div', { className: 'chip-group' }, dimButtons) : null,
+      ]),
+      models.length === 0
+        ? el('p', { className: 'sec-sub', textContent: 'No model usage in this period.' })
+        : el('div', { className: 'card-box' }, [el('ul', { className: 'item-list' }, listItems)]),
+    ]);
+  }
+
+  function buildToolsSection(stats) {
+    const totals = stats.tools?.totals || { calls: 0, succeeded: 0, failed: 0, unfinished: 0 };
+    const usage = Array.isArray(stats.tools?.usage) ? stats.tools.usage : [];
+    const completed = totals.succeeded + totals.failed;
+    const successRate = completed > 0 ? fmtPct.format(totals.succeeded / completed) : '—';
+
+    const visibleRows = showAllTools ? usage : usage.slice(0, 8);
+    const listItems = visibleRows.map((tool) => {
+      const metaText = tool.durationP50 !== null
+        ? `calls: ${fmtInt.format(tool.calls)} · median: ${formatDurationMs(tool.durationP50)}`
+        : `calls: ${fmtInt.format(tool.calls)}`;
+      const okPct = tool.calls > 0 ? (tool.succeeded / tool.calls) * 100 : 0;
+      const errPct = tool.calls > 0 ? (tool.failed / tool.calls) * 100 : 0;
+
+      return el('li', { className: 'item-row' }, [
+        el('div', { className: 'item-head' }, [
+          el('span', { className: 'item-name mono', textContent: tool.name, title: tool.name }),
+          el('span', { className: 'item-meta num', textContent: metaText }),
+        ]),
+        el('div', { className: 'thin-track' }, [
+          tool.succeeded > 0 ? el('div', { className: 'seg-out', style: `height:100%;width:${okPct.toFixed(1)}%` }) : null,
+          tool.failed > 0 ? el('div', { className: 'bar-fill danger', style: `height:100%;width:${errPct.toFixed(1)}%` }) : null,
+        ]),
+      ]);
+    });
+
+    let toggleBtn = null;
+    if (usage.length > 8) {
+      toggleBtn = el('button', {
+        type: 'button',
+        className: 'more-btn',
+        textContent: showAllTools ? 'Show top 8' : `Show all (${usage.length} tools)`,
+      });
+      toggleBtn.addEventListener('click', () => {
+        showAllTools = !showAllTools;
+        render();
+      });
+    }
+
+    return el('section', {}, [
+      el('div', { className: 'sec-head' }, [
+        el('h2', { textContent: 'Tool calls' }),
+        el('span', { className: 'sec-caption num', textContent: `${usage.length} distinct tools` }),
+      ]),
+      el('div', { className: 'tile-grid cols-4', style: 'margin-top:0;margin-bottom:8px' }, [
+        buildStatTile('Calls', fmtInt.format(totals.calls)),
+        buildStatTile('Success rate', successRate),
+        buildStatTile('Failed', fmtInt.format(totals.failed)),
+        buildStatTile('Unfinished', fmtInt.format(totals.unfinished)),
+      ]),
+      usage.length > 0
+        ? el('div', { className: 'card-box' }, [
+            el('ul', { className: 'item-list' }, listItems),
+            toggleBtn,
+          ])
+        : null,
+    ]);
+  }
+
+  function buildStatsNodes() {
+    const cached = statsCache.get(statsKey());
+    const stats = cached?.data || null;
+    const anyProjects = stats?.projects || Array.from(statsCache.values())[0]?.data?.projects || [];
+
+    const nodes = [buildStatsToolbar(anyProjects)];
+
+    if (statsError && !stats) {
+      const retryBtn = el('button', { type: 'button', textContent: 'Try again' });
+      retryBtn.addEventListener('click', () => loadStats(true));
+      nodes.push(el('div', { className: 'notice error', textContent: `Couldn't load stats: ${statsError}` }));
+      nodes.push(el('div', { style: 'margin-top:8px' }, [retryBtn]));
+      return nodes;
+    }
+
+    if (!stats) {
+      nodes.push(el('p', { className: 'empty', textContent: 'Loading stats…' }));
+      return nodes;
+    }
+
+    if (statsError) {
+      nodes.push(el('div', { className: 'notice', textContent: `Refresh failed (${statsError}). Showing cached stats.` }));
+    }
+
+    if (stats.prompts === 0 && stats.steps === 0) {
+      nodes.push(el('div', { className: 'empty' }, [
+        el('div', { style: 'font-weight:600;color:var(--fg);margin-bottom:3px', textContent: 'No activity in this period' }),
+        el('div', { textContent: 'Sessions you run will show up here.' }),
+      ]));
+      return nodes;
+    }
+
+    const t = stats.tokens || {};
+    const outAndThink = (t.output || 0) + (t.reasoning || 0);
+    nodes.push(el('div', { className: 'tile-grid cols-3' }, [
+      buildStatTile('Sessions', fmtInt.format(stats.sessions), `Subagents: ${fmtInt.format(stats.subagents)}`),
+      buildStatTile('Prompts', fmtInt.format(stats.prompts), `Steps: ${fmtInt.format(stats.steps)} · Compacted: ${fmtInt.format(stats.compactions || 0)}`),
+      buildStatTile(
+        'Tokens',
+        fmtCompact.format(t.total || 0),
+        `In ${fmtCompact.format(t.input || 0)} · Out ${fmtCompact.format(outAndThink)} · Cache ${fmtCompact.format(t.cacheRead || 0)}`
+      ),
+      buildStatTile('Est. Cost', fmtCost.format(stats.cost || 0), 'Public API equivalent'),
+      buildStatTile('Active days', fmtInt.format(stats.activeDays || 0)),
+      buildStatTile('Longest streak', `${fmtInt.format(stats.streak || 0)}d`),
+    ]));
+
+    nodes.push(buildActivitySection(stats));
+
+    const tokComp = buildTokenCompositionSection(stats);
+    if (tokComp) nodes.push(tokComp);
+
+    nodes.push(buildEfficiencySection(stats));
+    nodes.push(buildModelsSection(stats));
+    nodes.push(buildToolsSection(stats));
+
+    const updatedTime = stats.updatedAt
+      ? new Date(stats.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : '';
+    nodes.push(el('footer', {}, [
+      el('div', { className: 'foot-row num' }, [
+        el('span', { textContent: 'Scanned local conversation databases' }),
+        el('span', { textContent: updatedTime ? `Updated ${updatedTime}` : '' }),
+      ]),
+    ]));
+
+    return nodes;
+  }
+
+  function render() {
+    const header = buildHeader();
+    const bodyNodes = activeTab === 'quota' ? buildQuotaNodes() : buildStatsNodes();
+    main.replaceChildren(header, ...bodyNodes);
+  }
+
+  // --- Data Loaders ----------------------------------------------------------
+
+  async function refreshQuota(force = false) {
     if (!force && document.hidden) return;
-    if (isRefreshing) return;
-    isRefreshing = true;
-    if (currentData) render();
+    if (quotaRefreshing) return;
+    quotaRefreshing = true;
+    render();
 
     try {
       const qs = force ? '?force=1' : '';
       const res = await doFetch(`/api/usage${qs}`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      if (data.error) {
-        throw new Error(data.message || data.error);
-      }
-      currentData = data;
-      staleWarning = '';
-      isRefreshing = false;
+      if (data.error) throw new Error(data.message || data.error);
+      quotaData = data;
+      quotaWarning = '';
+      quotaRefreshing = false;
       render();
     } catch (err) {
-      isRefreshing = false;
-      if (currentData) {
-        staleWarning = `Refresh failed (${err.message}). Showing last known data.`;
-        render();
-      } else {
-        renderFatalError(err.message || 'Unknown error');
-      }
+      quotaRefreshing = false;
+      quotaWarning = err.message || 'Unknown error';
+      render();
+    }
+  }
+
+  async function loadStats(force = false) {
+    const key = statsKey();
+    if (!force && statsCache.has(key)) {
+      render();
+      return;
+    }
+    if (statsLoading) return;
+    statsLoading = true;
+    statsError = '';
+    render();
+
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const params = new URLSearchParams({
+        range: statsRange,
+        project: statsProject,
+        tz,
+        force: force ? '1' : '0',
+      });
+      const res = await doFetch(`/api/stats?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.message || data.error);
+      statsCache.set(key, { data, fetchedAt: Date.now() });
+      statsLoading = false;
+      statsError = '';
+      render();
+    } catch (err) {
+      statsLoading = false;
+      statsError = err.message || 'Unknown error';
+      render();
     }
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) refresh(false);
+    if (!document.hidden && activeTab === 'quota') refreshQuota(false);
   });
 
-  refresh(false);
-  setInterval(() => refresh(false), POLL_MS);
+  refreshQuota(false);
   setInterval(() => {
-    if (!document.hidden && currentData && !isRefreshing) render();
+    if (activeTab === 'quota') refreshQuota(false);
+  }, POLL_MS);
+  setInterval(() => {
+    if (!document.hidden && activeTab === 'quota' && quotaData && !quotaRefreshing) render();
   }, TICK_MS);
 })();
 </script>

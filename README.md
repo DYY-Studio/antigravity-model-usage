@@ -4,9 +4,15 @@ A **Model Usage** side panel for the **Antigravity 2.0** desktop app that displa
 
 ## What it shows
 
-- **Model Quota**: Remaining percentage, progress bar, reset countdown (`Resets in ...`), and exact local reset time for each model group (e.g., Gemini Models 5-hour & weekly limits, Claude and GPT models 5-hour & weekly limits).
-- **Plan & AI Credits**: Current subscription tier, available Google One AI credits, minimum credit threshold, and overage toggle status.
-- **Zero-Token Live Refresh**: Queries the local Antigravity Language Server (`RetrieveUserQuotaSummary`, `GetUserStatus`, `GetLoadCodeAssist`) directly from the sidecar backend.
+- **Model Quota (`Quota` tab)**: Remaining percentage, progress bar, reset countdown (`Resets in ...`), and exact local reset time for each model group (e.g., Gemini Models 5-hour & weekly limits, Claude and GPT models 5-hour & weekly limits).
+- **Plan & AI Credits (`Quota` tab)**: Current subscription tier, available Google One AI credits, minimum credit threshold, and overage toggle status.
+- **Usage Statistics (`Stats` tab)**: OpenChamber-inspired historical analytics across `7d`, `30d`, `90d`, and `All` time ranges with project filtering:
+  - **Summary Tiles**: Sessions (with subagent count), Prompts (with model steps & compactions), Tokens (`In · Out · Cache`), Public API Equivalent Cost (`Est. Cost`), Active days, and Longest streak.
+  - **Activity Chart**: Interactive daily/weekly model step bar chart.
+  - **Token Composition**: 4-segment stacked bar (`Input`, `Output`, `Reasoning`, `Cache reads`).
+  - **Efficiency & Performance**: Cache hit rate, Est. cost / session, Est. cost / 1M tokens, Tokens / session, Steps / session, Reasoning share, Average output speed (`tok/s`), and Median TTFT.
+  - **Models & Tool Calls**: Per-model breakdown comparable by `Tokens`, `Cost`, or `Steps`, plus per-tool execution counts, success rates, and P50 median durations (with MCP tools broken down as `server.tool`).
+- **Zero-Token Live Refresh**: Queries the local Antigravity Language Server (`RetrieveUserQuotaSummary`, `GetUserStatus`, `GetLoadCodeAssist`, `GetAvailableModels`) and local SQLite conversation databases directly from the sidecar backend.
 
 ## Installation
 
