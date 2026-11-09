@@ -244,11 +244,11 @@
     color: var(--dim);
   }
   .bar-track {
+    position: relative;
     width: 100%;
     height: 6px;
     background: var(--track);
     border-radius: 3px;
-    overflow: hidden;
   }
   .bar-fill {
     height: 100%;
@@ -257,6 +257,17 @@
   }
   .bar-fill.warn { background: var(--c-warn); }
   .bar-fill.danger { background: var(--c-danger); }
+  .bar-tick {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--fg);
+    box-shadow: 0 0 0 1px var(--background);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
   .bucket-meta {
     margin-top: 5px;
     display: flex;
@@ -802,10 +813,36 @@
     return { countdown, exact };
   }
 
+  const WINDOW_UNITS_MS = { s: 1000, m: 60000, h: 3600000, d: 86400000, w: 7 * 86400000 };
+
+  function getWindowDurationMs(bucket) {
+    const w = String(bucket.window || '').trim().toLowerCase();
+    if (w === 'weekly') return 7 * 86400000;
+    if (w === 'daily') return 86400000;
+    const m = /^(\d+)([smhdw])$/.exec(w);
+    if (m) return Number(m[1]) * WINDOW_UNITS_MS[m[2]];
+    const id = String(bucket.bucketId || '').toLowerCase();
+    if (id.endsWith('-weekly')) return 7 * 86400000;
+    if (id.endsWith('-5h')) return 5 * 3600000;
+    return 0;
+  }
+
+  function getWindowTimeRemainingPct(bucket) {
+    if (!bucket.resetTime) return null;
+    const windowMs = getWindowDurationMs(bucket);
+    if (windowMs <= 0) return null;
+    const resetMs = new Date(bucket.resetTime).getTime();
+    if (Number.isNaN(resetMs)) return null;
+    const diffMs = resetMs - Date.now();
+    if (diffMs <= 0) return null;
+    return Math.max(0, Math.min(100, (diffMs / windowMs) * 100));
+  }
+
   function buildBucketNode(bucket) {
     const frac = typeof bucket.remainingFraction === 'number' ? bucket.remainingFraction : 0;
     const pctNum = Math.max(0, Math.min(100, frac * 100));
     const statusClass = frac < 0.1 ? 'danger' : (frac < 0.25 ? 'warn' : '');
+    const timeRemPct = getWindowTimeRemainingPct(bucket);
 
     const labelChildren = [el('span', { textContent: bucket.displayName })];
     if (bucket.window) {
@@ -817,11 +854,21 @@
       el('span', { className: 'pct-main', textContent: formatQuotaPct(frac) }),
     ]);
 
-    const barTrack = el('div', { className: 'bar-track' }, [
+    const barTitle = timeRemPct !== null
+      ? `Window time remaining: ${timeRemPct.toFixed(1)}% (${(100 - timeRemPct).toFixed(1)}% elapsed)`
+      : null;
+
+    const barTrack = el('div', { className: 'bar-track', title: barTitle }, [
       el('div', {
         className: `bar-fill${statusClass ? ' ' + statusClass : ''}`,
         style: `width: ${pctNum.toFixed(1)}%`,
       }),
+      timeRemPct !== null
+        ? el('div', {
+            className: 'bar-tick',
+            style: `left: ${timeRemPct.toFixed(1)}%`,
+          })
+        : null,
     ]);
 
     const { countdown, exact } = formatResetInfo(bucket.resetTime);

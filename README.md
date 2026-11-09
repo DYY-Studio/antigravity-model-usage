@@ -4,7 +4,7 @@ A **Model Usage** side panel for the **Antigravity 2.0** desktop app that displa
 
 ## What it shows
 
-- **Model Quota (`Quota` tab)**: Remaining percentage, progress bar, reset countdown (`Resets in ...`), and exact local reset time for each model group (e.g., Gemini Models 5-hour & weekly limits, Claude and GPT models 5-hour & weekly limits).
+- **Model Quota (`Quota` tab)**: Remaining percentage, progress bar with a live window-time pacing tick mark (showing remaining time % in the 5-hour or weekly window), reset countdown (`Resets in ...`), and exact local reset time for each model group (e.g., Gemini Models 5-hour & weekly limits, Claude and GPT models 5-hour & weekly limits).
 - **Plan & AI Credits (`Quota` tab)**: Current subscription tier, available Google One AI credits, minimum credit threshold, and overage toggle status.
 - **Usage Statistics (`Stats` tab)**: OpenChamber-inspired historical analytics across `7d`, `30d`, `90d`, and `All` time ranges with combined **Project** and **Model** filtering (by model series or specific variant, plus click-to-filter in the Models list):
   - **Summary Tiles**: Sessions (with subagent count), Prompts (with model steps & compactions), Tokens (`In · Out · Cache`), Public API Equivalent Cost (`Est. Cost`), Active days, and Longest streak.
