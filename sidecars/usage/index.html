@@ -1626,6 +1626,7 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.error) throw new Error(data.message || data.error);
+      if (force) statsCache.clear();
       statsCache.set(key, { data, fetchedAt: Date.now() });
       statsLoading = false;
       statsError = '';
