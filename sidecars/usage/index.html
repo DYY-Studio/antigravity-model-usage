@@ -1207,6 +1207,17 @@
     const p = sm.pricing;
     const cb = sm.costBreakdown;
     const t = stats.tokens || {};
+    const over = p.overThreshold || null;
+    const thLabel = over ? `>${Math.round(over.thresholdTokens / 1000)}k` : '';
+
+    const statusLabel =
+      p.sourceStatus === 'live'
+        ? 'Live'
+        : p.sourceStatus === 'cached'
+          ? 'Cached'
+          : p.sourceStatus === 'cached-fallback' || p.sourceStatus === 'bundled-fallback'
+            ? 'Fallback'
+            : null;
 
     const clearBtn = el('button', {
       type: 'button',
@@ -1216,11 +1227,23 @@
     });
     clearBtn.addEventListener('click', () => selectModelFilter('__all__'));
 
+    const subNotes = [];
+    if (p.scheduleNote) subNotes.push(p.scheduleNote);
+    if (over && cb.overThresholdSteps > 0) {
+      subNotes.push(`${thLabel} tier steps: ${fmtInt.format(cb.overThresholdSteps)} (${fmtCompact.format(cb.overThresholdTokens || 0)} tok)`);
+    }
+    if (p.fallbackReason) subNotes.push(p.fallbackReason);
+
     return el('section', {}, [
       el('div', { className: 'sec-head' }, [
         el('h2', { textContent: `Public API pricing · ${sm.fullLabel}` }),
         el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
-          el('span', { className: 'sec-caption', textContent: p.benchmark || 'Public API benchmark' }),
+          el('span', {
+            className: 'sec-caption',
+            textContent: p.benchmark || 'Public API benchmark',
+            title: p.sourceUrl || '',
+          }),
+          statusLabel ? el('span', { className: 'tag', textContent: statusLabel, title: p.sourceUrl || '' }) : null,
           clearBtn,
         ]),
       ]),
@@ -1229,22 +1252,22 @@
           buildStatTile(
             'Input rate',
             `${fmtRate(p.input)} / 1M`,
-            `${fmtCompact.format(t.input || 0)} tok · ${fmtCost.format(cb.input)}`
+            `${over ? `${thLabel}: ${fmtRate(over.input)} · ` : ''}${fmtCompact.format(t.input || 0)} tok · ${fmtCost.format(cb.input)}`
           ),
           buildStatTile(
             'Output rate',
             `${fmtRate(p.output)} / 1M`,
-            `${fmtCompact.format(t.output || 0)} tok · ${fmtCost.format(cb.output)}`
+            `${over ? `${thLabel}: ${fmtRate(over.output)} · ` : ''}${fmtCompact.format(t.output || 0)} tok · ${fmtCost.format(cb.output)}`
           ),
           buildStatTile(
             'Reasoning rate',
             `${fmtRate(p.output)} / 1M`,
-            `${fmtCompact.format(t.reasoning || 0)} tok · ${fmtCost.format(cb.reasoning)}`
+            `${over ? `${thLabel}: ${fmtRate(over.output)} · ` : ''}${fmtCompact.format(t.reasoning || 0)} tok · ${fmtCost.format(cb.reasoning)}`
           ),
           buildStatTile(
             `Cache read rate (-${p.cacheDiscountPct}%)`,
             `${fmtRate(p.cacheRead)} / 1M`,
-            `${fmtCompact.format(t.cacheRead || 0)} tok · ${fmtCost.format(cb.cacheRead)}`
+            `${over ? `${thLabel}: ${fmtRate(over.cacheRead)} · ` : ''}${fmtCompact.format(t.cacheRead || 0)} tok · ${fmtCost.format(cb.cacheRead)}`
           ),
         ]),
         el('div', { className: 'pricing-foot num' }, [
@@ -1255,6 +1278,12 @@
           ]),
           el('span', { textContent: `Uncached eq: ${fmtCost.format(cb.uncachedTotal)}` }),
         ]),
+        subNotes.length > 0
+          ? el('div', { className: 'pricing-foot num', style: 'margin-top:4px;padding-top:6px' }, [
+              el('span', { textContent: subNotes.join(' · ') }),
+              p.sourceUrl ? el('span', { textContent: p.sourceUrl.replace(/^https?:\/\//, '') }) : null,
+            ])
+          : null,
       ]),
     ]);
   }
@@ -1566,6 +1595,16 @@
       nodes.push(el('div', { className: 'notice', textContent: `Refresh failed (${statsError}). Showing cached stats.` }));
     }
 
+    if (stats.pricingSources?.hasFallback) {
+      const reasons = [
+        stats.pricingSources.google?.fallbackReason ? `Google: ${stats.pricingSources.google.fallbackReason}` : null,
+        stats.pricingSources.anthropic?.fallbackReason ? `Anthropic: ${stats.pricingSources.anthropic.fallbackReason}` : null,
+      ].filter(Boolean);
+      if (reasons.length > 0) {
+        nodes.push(el('div', { className: 'notice', textContent: `Pricing fallback — ${reasons.join(' · ')}` }));
+      }
+    }
+
     const pricingCard = buildSelectedModelPricingSection(stats);
 
     if (stats.prompts === 0 && stats.steps === 0) {
@@ -1579,6 +1618,9 @@
 
     const t = stats.tokens || {};
     const outAndThink = (t.output || 0) + (t.reasoning || 0);
+    const costSub = stats.pricingSources?.hasFallback
+      ? 'Standard tier (fallback cache)'
+      : 'Standard tier · Official docs';
     nodes.push(el('div', { className: 'tile-grid cols-3' }, [
       buildStatTile('Sessions', fmtInt.format(stats.sessions), `Subagents: ${fmtInt.format(stats.subagents)}`),
       buildStatTile('Prompts', fmtInt.format(stats.prompts), `Steps: ${fmtInt.format(stats.steps)} · Compacted: ${fmtInt.format(stats.compactions || 0)}`),
@@ -1587,7 +1629,7 @@
         fmtCompact.format(t.total || 0),
         `In ${fmtCompact.format(t.input || 0)} · Out ${fmtCompact.format(outAndThink)} · Cache ${fmtCompact.format(t.cacheRead || 0)}`
       ),
-      buildStatTile('Est. Cost', fmtCost.format(stats.cost || 0), 'Public API equivalent'),
+      buildStatTile('Est. Cost', fmtCost.format(stats.cost || 0), costSub),
       buildStatTile('Active days', fmtInt.format(stats.activeDays || 0)),
       buildStatTile('Longest streak', `${fmtInt.format(stats.streak || 0)}d`),
     ]));

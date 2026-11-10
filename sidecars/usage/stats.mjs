@@ -6,16 +6,36 @@
 // performance metrics (4-segment tokens, output TPS, median TTFT, compactions,
 // and per-tool execution durations including MCP server.tool breakdown).
 
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const GEMINI_DIR = process.env.ANTIGRAVITY_GEMINI_DIR || join(homedir(), '.gemini');
 const APP_DIR = process.env.ANTIGRAVITY_APP_DATA_DIR || join(GEMINI_DIR, 'antigravity');
 const SUMMARIES_DB = join(APP_DIR, 'conversation_summaries.db');
 const CONVERSATIONS_DIR = join(APP_DIR, 'conversations');
+const PRICING_CACHE_PATH = join(APP_DIR, 'model_usage_pricing_cache.json');
+const PRICING_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+const OFFICIAL_PRICING_ENDPOINTS = {
+  google: {
+    mdUrl: 'https://aistudio.google.com/docs/pricing.md',
+    pageUrl: 'https://aistudio.google.com/docs/pricing',
+    label: 'Google AI Studio',
+  },
+  anthropic: {
+    mdUrl: 'https://platform.claude.com/docs/en/about-claude/pricing.md',
+    pageUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
+    label: 'Anthropic Docs',
+  },
+};
 
 const STEP_USER_INPUT = 14;
 const STEP_PLANNER_RESPONSE = 15;
@@ -238,80 +258,647 @@ function providerDisplayName(providerID) {
   return providerID || 'Unknown';
 }
 
-// Public API equivalent rates in USD per 1M tokens: { input, output (incl. reasoning), cacheRead, benchmark }
-function getModelPricingPerMillion(modelID, displayName, providerID) {
-  const key = `${modelID || ''} ${displayName || ''}`.toLowerCase();
-  if (key.includes('claude-opus') || key.includes('claude opus')) {
-    return {
-      input: 5.0,
-      output: 25.0,
-      cacheRead: 0.5,
-      benchmark: 'Anthropic Claude Opus API',
+// --- Official Public API Pricing (Live Markdown + Cache + Explicit Fallback) ---
+
+function normalizeModelSlug(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-(minimal|low|medium|high|xhigh|max|tiered|preview|customtools)$/g, '')
+    .replace(/^-+|-+$/g, '');
+}
+
+function parseDateBound(text, kind) {
+  const re =
+    kind === 'through'
+      ? /through\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i
+      : /starting\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i;
+  const m = String(text || '').match(re);
+  if (!m) return null;
+  const d = new Date(`${m[1]} ${kind === 'through' ? '23:59:59 UTC' : '00:00:00 UTC'}`);
+  return Number.isNaN(d.getTime()) ? null : { raw: m[1], ts: d.getTime() };
+}
+
+function parseAiStudioCell(cellText) {
+  const lines = String(cellText || '')
+    .split('\n')
+    .map((l) => l.replace(/\{%.*?%\}/g, '').replace(/\\/g, '').trim())
+    .filter(Boolean);
+
+  let baseRate = null;
+  let overThresholdRate = null;
+  let thresholdTokens = null;
+  const datedRules = [];
+
+  for (const line of lines) {
+    if (/storage price|per hour|explicit caching|implicit caching|equivalent to/i.test(line)) continue;
+    if (/\((?:audio|images?|video)\)/i.test(line) && !/text/i.test(line)) continue;
+    const priceMatch = line.match(/\$([0-9]+(?:\.[0-9]+)?)/);
+    if (!priceMatch) continue;
+    const price = Number(priceMatch[1]);
+    if (!Number.isFinite(price)) continue;
+
+    const leMatch = line.match(/prompts?\s*<=\s*(\d+)k/i);
+    if (leMatch) {
+      baseRate = price;
+      thresholdTokens = Number(leMatch[1]) * 1000;
+      continue;
+    }
+    const gtMatch = line.match(/prompts?\s*>\s*(\d+)k/i);
+    if (gtMatch) {
+      overThresholdRate = price;
+      thresholdTokens = Number(gtMatch[1]) * 1000;
+      continue;
+    }
+
+    const through = parseDateBound(line, 'through');
+    const starting = parseDateBound(line, 'starting');
+    if (through || starting) {
+      datedRules.push({
+        price,
+        throughRaw: through?.raw || null,
+        throughTs: through?.ts || null,
+        startingRaw: starting?.raw || null,
+        startingTs: starting?.ts || null,
+      });
+      continue;
+    }
+    if (baseRate === null) {
+      baseRate = price;
+    }
+  }
+
+  return { baseRate, overThresholdRate, thresholdTokens, datedRules };
+}
+
+export function parseAiStudioPricingMarkdown(md) {
+  const sections = String(md || '').split(/^##\s+/m).slice(1);
+  const models = [];
+  for (const sec of sections) {
+    const firstLine = sec.split('\n')[0] || '';
+    const title = firstLine
+      .replace(/\{%.*?%\}/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[\u{1F300}-\u{1FAFF}]/gu, '')
+      .trim();
+    const idMatch = firstLine.match(/id="([^"]+)"/);
+    const sectionId = idMatch ? idMatch[1] : '';
+    const headerBlock = sec.split(/\{%\s*hr\s*\/%\}/i)[0] || firstLine;
+    const codeIds = [...headerBlock.matchAll(/`(gemini-[^`]+)`/g)].map((m) => m[1]);
+    const tabMatch = sec.match(/\{%\s*tab\s+title="Standard"\s*%\}([\s\S]*?)\{%\s*\/tab\s*%\}/i);
+    const block = tabMatch ? tabMatch[1] : sec;
+
+    const rowRegex =
+      /\*\s*(Input price|Output price[^\n]*|Context caching price)\s*\n\s*\*\s*([^\n]+)\s*\n\s*\*\s*([\s\S]*?)(?=\n\s*---|\n\s*\{%\s*\/table)/gi;
+    let input = null;
+    let output = null;
+    let cacheRead = null;
+    for (const m of block.matchAll(rowRegex)) {
+      const feature = m[1].toLowerCase();
+      const parsed = parseAiStudioCell(m[3]);
+      if (feature.startsWith('input')) input = parsed;
+      else if (feature.startsWith('output')) output = parsed;
+      else if (feature.startsWith('context caching')) cacheRead = parsed;
+    }
+    if (
+      input &&
+      (input.baseRate != null || input.datedRules.length) &&
+      output &&
+      (output.baseRate != null || output.datedRules.length)
+    ) {
+      const cleanTitle = title.replace(/\s*\([^)]+\)\s*$/, '').trim();
+      const aliases = new Set([
+        normalizeModelSlug(title),
+        normalizeModelSlug(cleanTitle),
+        normalizeModelSlug(sectionId),
+        ...codeIds.map(normalizeModelSlug),
+      ]);
+      models.push({
+        providerID: 'google',
+        title,
+        sectionId: sectionId || normalizeModelSlug(title),
+        aliases: [...aliases].filter(Boolean),
+        input,
+        output,
+        cacheRead: cacheRead || { baseRate: 0, overThresholdRate: null, thresholdTokens: null, datedRules: [] },
+      });
+    }
+  }
+  return models;
+}
+
+export function parseClaudePricingMarkdown(md) {
+  const byTitle = new Map();
+  const tableMatch = String(md || '').match(/##\s+Model pricing[\s\S]*?(\|[\s\S]*?)\n\n/);
+  if (!tableMatch) return [];
+  const lines = tableMatch[1]
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('|'));
+  for (const line of lines.slice(2)) {
+    const cols = line
+      .split('|')
+      .slice(1, -1)
+      .map((c) => c.trim());
+    if (cols.length < 6) continue;
+    const rawCell = cols[0].replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim();
+    const isUpTo = /prompts?\s+up\s+to\s+([\d,]+)\s+tokens/i.exec(rawCell);
+    const isOver = /prompts?\s+over\s+([\d,]+)\s+tokens/i.exec(rawCell);
+    const cleanTitle = rawCell.replace(/\s*\(.*$/, '').trim();
+    const parsePrice = (s) => {
+      const m = String(s || '').match(/\$([0-9]+(?:\.[0-9]+)?)/);
+      return m ? Number(m[1]) : null;
     };
+    const inp = parsePrice(cols[1]);
+    const cr = parsePrice(cols[4]);
+    const out = parsePrice(cols[5]);
+    if (inp == null || out == null) continue;
+
+    let entry = byTitle.get(cleanTitle);
+    if (!entry) {
+      entry = {
+        providerID: 'anthropic',
+        title: cleanTitle,
+        sectionId: normalizeModelSlug(cleanTitle),
+        aliases: [normalizeModelSlug(cleanTitle)],
+        input: { baseRate: inp, overThresholdRate: null, thresholdTokens: null, datedRules: [] },
+        output: { baseRate: out, overThresholdRate: null, thresholdTokens: null, datedRules: [] },
+        cacheRead: { baseRate: cr ?? 0, overThresholdRate: null, thresholdTokens: null, datedRules: [] },
+      };
+      byTitle.set(cleanTitle, entry);
+    }
+    if (isUpTo) {
+      const th = Number(isUpTo[1].replace(/,/g, ''));
+      entry.input.baseRate = inp;
+      entry.output.baseRate = out;
+      entry.cacheRead.baseRate = cr ?? 0;
+      entry.input.thresholdTokens = th;
+    } else if (isOver) {
+      const th = Number(isOver[1].replace(/,/g, ''));
+      entry.input.overThresholdRate = inp;
+      entry.output.overThresholdRate = out;
+      entry.cacheRead.overThresholdRate = cr ?? 0;
+      entry.input.thresholdTokens = th;
+    }
+  }
+  return [...byTitle.values()];
+}
+
+const fFlat = (baseRate) => ({ baseRate, overThresholdRate: null, thresholdTokens: null, datedRules: [] });
+const fTier = (baseRate, overThresholdRate, thresholdTokens) => ({
+  baseRate,
+  overThresholdRate,
+  thresholdTokens,
+  datedRules: [],
+});
+const fDate = (p1, throughRaw, throughTs, p2, startingRaw, startingTs) => ({
+  baseRate: null,
+  overThresholdRate: null,
+  thresholdTokens: null,
+  datedRules: [
+    { price: p1, throughRaw, throughTs, startingRaw: null, startingTs: null },
+    { price: p2, throughRaw: null, throughTs: null, startingRaw, startingTs },
+  ],
+});
+const bModel = (providerID, title, sectionId, aliases, input, output, cacheRead) => ({
+  providerID,
+  title,
+  sectionId,
+  aliases,
+  input,
+  output,
+  cacheRead,
+});
+
+const BUNDLED_OFFICIAL_PRICING = {
+  snapshotDate: '2026-11-10',
+  google: [
+    bModel(
+      'google',
+      'Gemini 4 Argon',
+      'gemini-4-argon',
+      ['gemini-4-argon'],
+      fDate(2.0, 'November 30, 2026', 1796083199000, 4.0, 'December 1, 2026', 1796083200000),
+      fDate(10.0, 'November 30, 2026', 1796083199000, 20.0, 'December 1, 2026', 1796083200000),
+      fDate(0.1, 'November 30, 2026', 1796083199000, 0.2, 'December 1, 2026', 1796083200000)
+    ),
+    bModel(
+      'google',
+      'Gemini 3.8 Flash',
+      'gemini-3.8-flash',
+      ['gemini-3-8-flash'],
+      fDate(0.75, 'December 31, 2026', 1798761599000, 1.5, 'January 1, 2027', 1798761600000),
+      fDate(3.75, 'December 31, 2026', 1798761599000, 7.5, 'January 1, 2027', 1798761600000),
+      fDate(0.075, 'December 31, 2026', 1798761599000, 0.15, 'January 1, 2027', 1798761600000)
+    ),
+    bModel('google', 'Gemini 3.5 Flash-Lite', 'gemini-3.5-flash-lite', ['gemini-3-5-flash-lite'], fFlat(0.3), fFlat(2.5), fFlat(0.03)),
+    bModel('google', 'Gemini 3.1 Flash-Lite', 'gemini-3.1-flash-lite', ['gemini-3-1-flash-lite'], fFlat(0.25), fFlat(1.5), fFlat(0.025)),
+    bModel('google', 'Gemini 3.1 Pro Preview', 'gemini-3.1-pro-preview', ['gemini-3-1-pro', 'gemini-3-1-pro-preview'], fTier(2.0, 4.0, 200000), fTier(12.0, 18.0, 200000), fTier(0.2, 0.4, 200000)),
+    bModel('google', 'Gemini 3.1 Flash Image (Nano Banana 2)', 'gemini-3.1-flash-image', ['gemini-3-1-flash-image', 'gemini-3-1-flash-image-nano-banana-2'], fFlat(0.5), fFlat(3.0), fFlat(0)),
+    bModel('google', 'Gemini 3 Flash Preview', 'gemini-3-flash-preview', ['gemini-3-flash'], fFlat(0.5), fFlat(3.0), fFlat(0.05)),
+    bModel('google', 'Gemini 2.5 Pro', 'gemini-2.5-pro', ['gemini-2-5-pro'], fTier(1.25, 2.5, 200000), fTier(10.0, 15.0, 200000), fTier(0.125, 0.25, 200000)),
+    bModel('google', 'Gemini 2.5 Flash', 'gemini-2.5-flash', ['gemini-2-5-flash'], fFlat(0.3), fFlat(2.5), fFlat(0.03)),
+  ],
+  anthropic: [
+    bModel('anthropic', 'Claude Opus 5.5', 'claude-opus-5-5', ['claude-opus-5-5'], fFlat(4.0), fFlat(20.0), fFlat(0.2)),
+    bModel('anthropic', 'Claude Opus 4.6', 'claude-opus-4-6', ['claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5'], fFlat(5.0), fFlat(25.0), fFlat(0.5)),
+    bModel('anthropic', 'Claude Sonnet 5.5', 'claude-sonnet-5-5', ['claude-sonnet-5-5'], fFlat(2.0), fFlat(10.0), fFlat(0.1)),
+    bModel('anthropic', 'Claude Sonnet 4.6', 'claude-sonnet-4-6', ['claude-sonnet-4-6', 'claude-sonnet-4-5'], fFlat(3.0), fFlat(15.0), fFlat(0.3)),
+    bModel('anthropic', 'Claude Haiku 5.5', 'claude-haiku-5-5', ['claude-haiku-5-5'], fTier(0.1, 0.5, 100000), fTier(0.5, 2.5, 100000), fTier(0.01, 0.05, 100000)),
+  ],
+};
+
+function checkLocalPort(port, host = '127.0.0.1', timeoutMs = 120) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ port, host });
+    const done = (ok) => {
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+    sock.once('timeout', () => done(false));
+  });
+}
+
+function sanitizeProxyUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:' && u.protocol !== 'socks5:') return null;
+    return u.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+async function fetchAllowedPricingMarkdown(providerKey) {
+  const endpoint = OFFICIAL_PRICING_ENDPOINTS[providerKey];
+  if (!endpoint) throw new Error(`Unknown pricing provider: ${providerKey}`);
+
+  const envProxy = sanitizeProxyUrl(
+    process.env.MODEL_USAGE_PROXY ||
+      process.env.HTTPS_PROXY ||
+      process.env.https_proxy ||
+      process.env.HTTP_PROXY ||
+      process.env.http_proxy ||
+      process.env.ALL_PROXY ||
+      process.env.all_proxy
+  );
+
+  const proxyCandidates = [];
+  if (envProxy) {
+    proxyCandidates.push(envProxy);
+  } else if (await checkLocalPort(7890)) {
+    proxyCandidates.push('http://127.0.0.1:7890');
+  }
+  proxyCandidates.push(null);
+
+  let lastErr = null;
+  for (const proxy of proxyCandidates) {
+    try {
+      const args = ['-sSL', '--fail', '--max-time', '6'];
+      if (proxy) args.push('-x', proxy);
+      args.push(endpoint.mdUrl);
+      const { stdout } = await execFileAsync('/usr/bin/curl', args, { maxBuffer: 4 * 1024 * 1024 });
+      if (stdout && stdout.length > 500) {
+        return { text: stdout, via: proxy ? `proxy (${proxy})` : 'direct' };
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error(`Failed to fetch ${endpoint.mdUrl}`);
+}
+
+function readPricingDiskCache() {
+  try {
+    if (!existsSync(PRICING_CACHE_PATH)) return null;
+    const raw = JSON.parse(readFileSync(PRICING_CACHE_PATH, 'utf8'));
+    if (!raw || typeof raw !== 'object') return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function writePricingDiskCache(data) {
+  try {
+    writeFileSync(PRICING_CACHE_PATH, JSON.stringify(data, null, 2), 'utf8');
+  } catch {
+    // Non-fatal if disk cache cannot be written.
+  }
+}
+
+let pricingState = {
+  loadedAt: 0,
+  google: {
+    models: BUNDLED_OFFICIAL_PRICING.google,
+    status: 'bundled-fallback',
+    updatedAt: BUNDLED_OFFICIAL_PRICING.snapshotDate,
+    url: OFFICIAL_PRICING_ENDPOINTS.google.pageUrl,
+    fallbackReason: 'Not yet fetched',
+  },
+  anthropic: {
+    models: BUNDLED_OFFICIAL_PRICING.anthropic,
+    status: 'bundled-fallback',
+    updatedAt: BUNDLED_OFFICIAL_PRICING.snapshotDate,
+    url: OFFICIAL_PRICING_ENDPOINTS.anthropic.pageUrl,
+    fallbackReason: 'Not yet fetched',
+  },
+};
+
+export async function refreshOfficialPricingCatalog(force = false) {
+  const nowMs = Date.now();
+  if (!force && pricingState.loadedAt > 0 && nowMs - pricingState.loadedAt < PRICING_CACHE_TTL_MS) {
+    return pricingState;
+  }
+
+  const diskCache = readPricingDiskCache();
+  if (!force && diskCache?.fetchedAtMs && nowMs - diskCache.fetchedAtMs < PRICING_CACHE_TTL_MS) {
+    if (Array.isArray(diskCache.google?.models) && diskCache.google.models.length > 0 &&
+        Array.isArray(diskCache.anthropic?.models) && diskCache.anthropic.models.length > 0) {
+      pricingState = {
+        loadedAt: diskCache.fetchedAtMs,
+        google: {
+          models: diskCache.google.models,
+          status: 'cached',
+          updatedAt: diskCache.google.updatedAt || new Date(diskCache.fetchedAtMs).toISOString(),
+          url: OFFICIAL_PRICING_ENDPOINTS.google.pageUrl,
+          fallbackReason: null,
+        },
+        anthropic: {
+          models: diskCache.anthropic.models,
+          status: 'cached',
+          updatedAt: diskCache.anthropic.updatedAt || new Date(diskCache.fetchedAtMs).toISOString(),
+          url: OFFICIAL_PRICING_ENDPOINTS.anthropic.pageUrl,
+          fallbackReason: null,
+        },
+      };
+      return pricingState;
+    }
+  }
+
+  const [gRes, cRes] = await Promise.allSettled([
+    fetchAllowedPricingMarkdown('google'),
+    fetchAllowedPricingMarkdown('anthropic'),
+  ]);
+
+  const fetchedIso = new Date(nowMs).toISOString();
+  let nextGoogle = null;
+  if (gRes.status === 'fulfilled') {
+    const parsed = parseAiStudioPricingMarkdown(gRes.value.text);
+    if (parsed.length > 0) {
+      nextGoogle = {
+        models: parsed,
+        status: 'live',
+        updatedAt: fetchedIso,
+        url: OFFICIAL_PRICING_ENDPOINTS.google.pageUrl,
+        fallbackReason: null,
+      };
+    }
+  }
+  if (!nextGoogle) {
+    const errMsg = gRes.status === 'rejected' ? (gRes.reason?.message || 'Fetch failed') : 'Empty pricing table';
+    if (Array.isArray(diskCache?.google?.models) && diskCache.google.models.length > 0) {
+      nextGoogle = {
+        models: diskCache.google.models,
+        status: 'cached-fallback',
+        updatedAt: diskCache.google.updatedAt || null,
+        url: OFFICIAL_PRICING_ENDPOINTS.google.pageUrl,
+        fallbackReason: `Live fetch failed (${errMsg.slice(0, 120)}); using cached pricing`,
+      };
+    } else {
+      nextGoogle = {
+        models: BUNDLED_OFFICIAL_PRICING.google,
+        status: 'bundled-fallback',
+        updatedAt: BUNDLED_OFFICIAL_PRICING.snapshotDate,
+        url: OFFICIAL_PRICING_ENDPOINTS.google.pageUrl,
+        fallbackReason: `Live fetch failed (${errMsg.slice(0, 120)}); using bundled snapshot (${BUNDLED_OFFICIAL_PRICING.snapshotDate})`,
+      };
+    }
+  }
+
+  let nextAnthropic = null;
+  if (cRes.status === 'fulfilled') {
+    const parsed = parseClaudePricingMarkdown(cRes.value.text);
+    if (parsed.length > 0) {
+      nextAnthropic = {
+        models: parsed,
+        status: 'live',
+        updatedAt: fetchedIso,
+        url: OFFICIAL_PRICING_ENDPOINTS.anthropic.pageUrl,
+        fallbackReason: null,
+      };
+    }
+  }
+  if (!nextAnthropic) {
+    const errMsg = cRes.status === 'rejected' ? (cRes.reason?.message || 'Fetch failed') : 'Empty pricing table';
+    if (Array.isArray(diskCache?.anthropic?.models) && diskCache.anthropic.models.length > 0) {
+      nextAnthropic = {
+        models: diskCache.anthropic.models,
+        status: 'cached-fallback',
+        updatedAt: diskCache.anthropic.updatedAt || null,
+        url: OFFICIAL_PRICING_ENDPOINTS.anthropic.pageUrl,
+        fallbackReason: `Live fetch failed (${errMsg.slice(0, 120)}); using cached pricing`,
+      };
+    } else {
+      nextAnthropic = {
+        models: BUNDLED_OFFICIAL_PRICING.anthropic,
+        status: 'bundled-fallback',
+        updatedAt: BUNDLED_OFFICIAL_PRICING.snapshotDate,
+        url: OFFICIAL_PRICING_ENDPOINTS.anthropic.pageUrl,
+        fallbackReason: `Live fetch failed (${errMsg.slice(0, 120)}); using bundled snapshot (${BUNDLED_OFFICIAL_PRICING.snapshotDate})`,
+      };
+    }
+  }
+
+  pricingState = {
+    loadedAt: nowMs,
+    google: nextGoogle,
+    anthropic: nextAnthropic,
+  };
+
+  if (nextGoogle.status === 'live' || nextAnthropic.status === 'live') {
+    writePricingDiskCache({
+      fetchedAtMs: nowMs,
+      google: { models: nextGoogle.models, updatedAt: nextGoogle.updatedAt },
+      anthropic: { models: nextAnthropic.models, updatedAt: nextAnthropic.updatedAt },
+    });
+  }
+
+  return pricingState;
+}
+
+function resolveFieldRate(fieldRule, nowMs = Date.now()) {
+  if (!fieldRule) return { rate: 0, overThresholdRate: null, thresholdTokens: null, activeRule: null, futureRule: null };
+  let rate = fieldRule.baseRate;
+  let activeRule = null;
+  let futureRule = null;
+  const rules = Array.isArray(fieldRule.datedRules) ? fieldRule.datedRules : [];
+  if (rules.length > 0) {
+    activeRule =
+      rules.find((r) => {
+        if (r.throughTs && nowMs > r.throughTs) return false;
+        if (r.startingTs && nowMs < r.startingTs) return false;
+        return true;
+      }) || rules[0];
+    rate = activeRule.price;
+    futureRule = rules.find((r) => r !== activeRule && r.startingTs && nowMs < r.startingTs) || null;
+  }
+  return {
+    rate: Number.isFinite(rate) ? rate : 0,
+    overThresholdRate: Number.isFinite(fieldRule.overThresholdRate) ? fieldRule.overThresholdRate : null,
+    thresholdTokens: fieldRule.thresholdTokens || null,
+    activeRule,
+    futureRule,
+  };
+}
+
+function matchCatalogEntry(modelID, displayName, providerID) {
+  const normSlug = normalizeModelSlug(modelID);
+  const normName = normalizeModelSlug(String(displayName || '').replace(/\([^)]*\)/g, ''));
+  const allEntries = [...pricingState.google.models, ...pricingState.anthropic.models];
+
+  const exact = allEntries.find(
+    (e) => e.aliases.includes(normSlug) || (normName && e.aliases.includes(normName))
+  );
+  if (exact) return exact;
+
+  const key = `${modelID || ''} ${displayName || ''}`.toLowerCase();
+  const findById = (id) => allEntries.find((e) => e.sectionId === id || e.aliases.includes(id));
+
+  if (key.includes('claude-opus') || key.includes('claude opus')) {
+    return findById('claude-opus-5-5') || allEntries.find((e) => e.sectionId.startsWith('claude-opus'));
   }
   if (key.includes('claude-sonnet') || key.includes('claude sonnet')) {
-    return {
-      input: 3.0,
-      output: 15.0,
-      cacheRead: 0.3,
-      benchmark: 'Anthropic Claude Sonnet API',
-    };
+    return findById('claude-sonnet-5-5') || allEntries.find((e) => e.sectionId.startsWith('claude-sonnet'));
   }
   if (key.includes('claude-haiku') || key.includes('claude haiku')) {
-    return {
-      input: 1.0,
-      output: 5.0,
-      cacheRead: 0.1,
-      benchmark: 'Anthropic Claude Haiku API',
-    };
+    return findById('claude-haiku-5-5') || allEntries.find((e) => e.sectionId.startsWith('claude-haiku'));
   }
+  if (key.includes('argon')) {
+    return findById('gemini-4-argon');
+  }
+  if (key.includes('3.8-flash') || key.includes('3-8-flash')) {
+    return findById('gemini-3.8-flash');
+  }
+  if (key.includes('3.1-flash-lite') || key.includes('3-1-flash-lite')) {
+    return findById('gemini-3.1-flash-lite');
+  }
+  if (key.includes('flash-lite') || key.includes('flash lite') || key.includes('tab_') || key.includes('chat_')) {
+    return findById('gemini-3.5-flash-lite') || findById('gemini-3.1-flash-lite');
+  }
+  if (key.includes('flash')) {
+    return findById('gemini-3.8-flash') || findById('gemini-3-flash-preview');
+  }
+  if (key.includes('pro') || providerID === 'google') {
+    return findById('gemini-3.1-pro-preview') || findById('gemini-4-argon');
+  }
+  return null;
+}
+
+function getModelPricingPerMillion(modelID, displayName, providerID, nowMs = Date.now()) {
+  const key = `${modelID || ''} ${displayName || ''}`.toLowerCase();
   if (key.includes('gpt-oss')) {
     return {
       input: 0.15,
       output: 0.6,
       cacheRead: 0.0375,
-      benchmark: 'Open-weight 120B API equivalent',
+      overThreshold: null,
+      scheduleNote: null,
+      benchmark: 'Open-weight 120B API equivalent (Standard)',
+      sourceStatus: 'builtin',
+      sourceUrl: null,
+      sourceUpdatedAt: null,
+      fallbackReason: null,
     };
   }
-  if (key.includes('flash-lite') || key.includes('flash lite') || key.includes('tab_') || key.includes('chat_')) {
+
+  const matched = matchCatalogEntry(modelID, displayName, providerID);
+  if (matched) {
+    const provState = matched.providerID === 'anthropic' ? pricingState.anthropic : pricingState.google;
+    const inp = resolveFieldRate(matched.input, nowMs);
+    const out = resolveFieldRate(matched.output, nowMs);
+    const cr = resolveFieldRate(matched.cacheRead, nowMs);
+
+    const thresholdTokens = inp.thresholdTokens || out.thresholdTokens || cr.thresholdTokens || null;
+    const hasOverThreshold =
+      thresholdTokens &&
+      (inp.overThresholdRate != null || out.overThresholdRate != null || cr.overThresholdRate != null);
+
+    let scheduleNote = null;
+    if (inp.activeRule?.throughRaw && inp.futureRule?.startingRaw) {
+      scheduleNote = `Promo through ${inp.activeRule.throughRaw} · Starting ${inp.futureRule.startingRaw}: $${inp.futureRule.price} in / $${out.futureRule?.price ?? out.rate} out / $${cr.futureRule?.price ?? cr.rate} cache`;
+    } else if (inp.activeRule?.startingRaw) {
+      scheduleNote = `Effective since ${inp.activeRule.startingRaw}`;
+    }
+
+    const provLabel = matched.providerID === 'anthropic' ? 'Anthropic Docs' : 'Google AI Studio';
+    const bracketSuffix = hasOverThreshold ? ` · <=${Math.round(thresholdTokens / 1000)}k / >${Math.round(thresholdTokens / 1000)}k` : '';
+
     return {
-      input: 0.1,
-      output: 0.4,
-      cacheRead: 0.025,
-      benchmark: 'Google Gemini Flash-Lite API',
+      input: inp.rate,
+      output: out.rate,
+      cacheRead: cr.rate,
+      overThreshold: hasOverThreshold
+        ? {
+            thresholdTokens,
+            input: inp.overThresholdRate ?? inp.rate,
+            output: out.overThresholdRate ?? out.rate,
+            cacheRead: cr.overThresholdRate ?? cr.rate,
+          }
+        : null,
+      scheduleNote,
+      benchmark: `${provLabel} · ${matched.title} (Standard${bracketSuffix})`,
+      sourceStatus: provState.status,
+      sourceUrl:
+        matched.providerID === 'anthropic'
+          ? `${OFFICIAL_PRICING_ENDPOINTS.anthropic.pageUrl}#model-pricing`
+          : `${OFFICIAL_PRICING_ENDPOINTS.google.pageUrl}#${matched.sectionId}`,
+      sourceUpdatedAt: provState.updatedAt,
+      fallbackReason: provState.fallbackReason,
     };
   }
-  if (key.includes('flash')) {
-    return {
-      input: 0.3,
-      output: 2.5,
-      cacheRead: 0.075,
-      benchmark: 'Google Gemini Flash API',
-    };
-  }
-  if (key.includes('argon') || key.includes('pro') || providerID === 'google') {
-    return {
-      input: 1.25,
-      output: 10.0,
-      cacheRead: 0.3125,
-      benchmark: 'Google Gemini Pro API (<=200k tier)',
-    };
-  }
+
   return {
     input: 1.0,
     output: 5.0,
     cacheRead: 0.25,
+    overThreshold: null,
+    scheduleNote: null,
     benchmark: 'Standard public API benchmark',
+    sourceStatus: 'builtin',
+    sourceUrl: null,
+    sourceUpdatedAt: null,
+    fallbackReason: null,
   };
 }
 
-function estimateTokensCost(tokens, pricing) {
-  return (
-    (tokens.input * pricing.input +
-      (tokens.output + tokens.reasoning) * pricing.output +
-      tokens.cacheRead * pricing.cacheRead) /
-    1_000_000
-  );
+function estimateStepCostBreakdown(tokens, pricing) {
+  const promptTokens = (tokens.input || 0) + (tokens.cacheRead || 0);
+  const isOver = Boolean(pricing.overThreshold && promptTokens > pricing.overThreshold.thresholdTokens);
+  const rates = isOver ? pricing.overThreshold : pricing;
+  const inputCost = ((tokens.input || 0) * rates.input) / 1_000_000;
+  const outputCost = ((tokens.output || 0) * rates.output) / 1_000_000;
+  const reasoningCost = ((tokens.reasoning || 0) * rates.output) / 1_000_000;
+  const cacheReadCost = ((tokens.cacheRead || 0) * rates.cacheRead) / 1_000_000;
+  const totalCost = inputCost + outputCost + reasoningCost + cacheReadCost;
+  const cacheSaved = ((tokens.cacheRead || 0) * Math.max(0, rates.input - rates.cacheRead)) / 1_000_000;
+  const uncachedTotal =
+    (promptTokens * rates.input + ((tokens.output || 0) + (tokens.reasoning || 0)) * rates.output) / 1_000_000;
+  return {
+    isOver,
+    inputCost,
+    outputCost,
+    reasoningCost,
+    cacheReadCost,
+    totalCost,
+    cacheSaved,
+    uncachedTotal,
+  };
 }
 
 // --- Caching & Database Readers ----------------------------------------------
@@ -770,7 +1357,10 @@ export async function computeUsageStatsReport(options = {}) {
   const timeZone = options.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const force = Boolean(options.force);
 
-  await refreshStatsModelCatalog(options.lsRequest, force);
+  await Promise.all([
+    refreshStatsModelCatalog(options.lsRequest, force),
+    refreshOfficialPricingCatalog(force),
+  ]);
 
   const summariesMap = readConversationSummariesMap();
   const projectsMap = new Map();
@@ -809,6 +1399,16 @@ export async function computeUsageStatsReport(options = {}) {
   };
 
   let filteredCost = 0;
+  const filteredBreakdown = {
+    input: 0,
+    output: 0,
+    reasoning: 0,
+    cacheRead: 0,
+    cacheSaved: 0,
+    uncachedTotal: 0,
+    overThresholdSteps: 0,
+    overThresholdTokens: 0,
+  };
   let timedOutTokens = 0;
   let totalGenDurSec = 0;
   const ttftSamples = [];
@@ -848,6 +1448,7 @@ export async function computeUsageStatsReport(options = {}) {
       // so the Models selector and comparison list stay complete when a model is selected.
       if (ev.kind === 'model' && mInfo) {
         const evTotal = ev.input + ev.output + ev.reasoning + ev.cacheRead;
+        const stepCost = estimateStepCostBreakdown(ev, mInfo.pricing);
         let mEntry = modelMap.get(mInfo.key);
         if (!mEntry) {
           mEntry = {
@@ -874,6 +1475,7 @@ export async function computeUsageStatsReport(options = {}) {
         mEntry.tokens.reasoning += ev.reasoning;
         mEntry.tokens.cacheRead += ev.cacheRead;
         mEntry.tokens.total += evTotal;
+        mEntry.cost += stepCost.totalCost;
         if (ev.durSec > 0) {
           mEntry._timedOut += ev.output + ev.reasoning;
           mEntry._durSec += ev.durSec;
@@ -904,10 +1506,18 @@ export async function computeUsageStatsReport(options = {}) {
         tokens.cacheRead += ev.cacheRead;
         tokens.total += evTotal;
 
-        filteredCost += estimateTokensCost(
-          { input: ev.input, output: ev.output, reasoning: ev.reasoning, cacheRead: ev.cacheRead },
-          mInfo.pricing
-        );
+        const stepCost = estimateStepCostBreakdown(ev, mInfo.pricing);
+        filteredCost += stepCost.totalCost;
+        filteredBreakdown.input += stepCost.inputCost;
+        filteredBreakdown.output += stepCost.outputCost;
+        filteredBreakdown.reasoning += stepCost.reasoningCost;
+        filteredBreakdown.cacheRead += stepCost.cacheReadCost;
+        filteredBreakdown.cacheSaved += stepCost.cacheSaved;
+        filteredBreakdown.uncachedTotal += stepCost.uncachedTotal;
+        if (stepCost.isOver) {
+          filteredBreakdown.overThresholdSteps += 1;
+          filteredBreakdown.overThresholdTokens += evTotal;
+        }
 
         const dayKey = dayKeyOf(ev.tsMs);
         activityMap.set(dayKey, (activityMap.get(dayKey) || 0) + 1);
@@ -957,24 +1567,21 @@ export async function computeUsageStatsReport(options = {}) {
   const activeDays = activity.length;
   const streak = computeLongestStreak(activity.map((d) => d.date));
 
-  const models = Array.from(modelMap.values()).map((m) => {
-    const cost = estimateTokensCost(m.tokens, m._pricing);
-    return {
-      key: m.key,
-      familyKey: m.familyKey,
-      familyID: m.familyID,
-      providerID: m.providerID,
-      providerName: m.providerName,
-      modelID: m.modelID,
-      displayName: m.displayName,
-      variant: m.variant,
-      steps: m.steps,
-      tokens: m.tokens,
-      cost: Number(cost.toFixed(4)),
-      avgOutputTps: m._durSec > 0 ? Number((m._timedOut / m._durSec).toFixed(1)) : null,
-      pricing: m._pricing,
-    };
-  });
+  const models = Array.from(modelMap.values()).map((m) => ({
+    key: m.key,
+    familyKey: m.familyKey,
+    familyID: m.familyID,
+    providerID: m.providerID,
+    providerName: m.providerName,
+    modelID: m.modelID,
+    displayName: m.displayName,
+    variant: m.variant,
+    steps: m.steps,
+    tokens: m.tokens,
+    cost: Number(m.cost.toFixed(4)),
+    avgOutputTps: m._durSec > 0 ? Number((m._timedOut / m._durSec).toFixed(1)) : null,
+    pricing: m._pricing,
+  }));
   models.sort((a, b) => b.tokens.total - a.tokens.total);
 
   const familyMap = new Map();
@@ -1003,13 +1610,6 @@ export async function computeUsageStatsReport(options = {}) {
     if (spec) {
       const p = spec.pricing;
       const cacheDiscountPct = p.input > 0 ? Math.round((1 - p.cacheRead / p.input) * 100) : 0;
-      const inputCost = (tokens.input * p.input) / 1_000_000;
-      const outputCost = (tokens.output * p.output) / 1_000_000;
-      const reasoningCost = (tokens.reasoning * p.output) / 1_000_000;
-      const cacheReadCost = (tokens.cacheRead * p.cacheRead) / 1_000_000;
-      const cacheSaved = (tokens.cacheRead * Math.max(0, p.input - p.cacheRead)) / 1_000_000;
-      const uncachedTotal =
-        ((tokens.input + tokens.cacheRead) * p.input + (tokens.output + tokens.reasoning) * p.output) / 1_000_000;
 
       selectedModel = {
         ...spec,
@@ -1017,18 +1617,26 @@ export async function computeUsageStatsReport(options = {}) {
           input: p.input,
           output: p.output,
           cacheRead: p.cacheRead,
+          overThreshold: p.overThreshold || null,
+          scheduleNote: p.scheduleNote || null,
           benchmark: p.benchmark,
           cacheDiscountPct,
+          sourceStatus: p.sourceStatus || 'builtin',
+          sourceUrl: p.sourceUrl || null,
+          sourceUpdatedAt: p.sourceUpdatedAt || null,
+          fallbackReason: p.fallbackReason || null,
         },
         costBreakdown: {
-          input: Number(inputCost.toFixed(4)),
-          output: Number(outputCost.toFixed(4)),
-          reasoning: Number(reasoningCost.toFixed(4)),
-          outputTotal: Number((outputCost + reasoningCost).toFixed(4)),
-          cacheRead: Number(cacheReadCost.toFixed(4)),
+          input: Number(filteredBreakdown.input.toFixed(4)),
+          output: Number(filteredBreakdown.output.toFixed(4)),
+          reasoning: Number(filteredBreakdown.reasoning.toFixed(4)),
+          outputTotal: Number((filteredBreakdown.output + filteredBreakdown.reasoning).toFixed(4)),
+          cacheRead: Number(filteredBreakdown.cacheRead.toFixed(4)),
           total: Number(filteredCost.toFixed(4)),
-          cacheSaved: Number(cacheSaved.toFixed(4)),
-          uncachedTotal: Number(uncachedTotal.toFixed(4)),
+          cacheSaved: Number(filteredBreakdown.cacheSaved.toFixed(4)),
+          uncachedTotal: Number(filteredBreakdown.uncachedTotal.toFixed(4)),
+          overThresholdSteps: filteredBreakdown.overThresholdSteps,
+          overThresholdTokens: filteredBreakdown.overThresholdTokens,
         },
       };
     }
@@ -1046,6 +1654,9 @@ export async function computeUsageStatsReport(options = {}) {
     .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 
   const effectiveFrom = window.from !== null ? window.from : (earliestEventMs ?? nowMs);
+  const gStat = pricingState.google;
+  const cStat = pricingState.anthropic;
+  const hasFallback = Boolean(gStat.fallbackReason || cStat.fallbackReason);
 
   return {
     range: { from: effectiveFrom, to: window.to },
@@ -1055,6 +1666,21 @@ export async function computeUsageStatsReport(options = {}) {
     model: modelFilter || '__all__',
     modelFamilies,
     selectedModel,
+    pricingSources: {
+      hasFallback,
+      google: {
+        status: gStat.status,
+        updatedAt: gStat.updatedAt,
+        url: gStat.url,
+        fallbackReason: gStat.fallbackReason,
+      },
+      anthropic: {
+        status: cStat.status,
+        updatedAt: cStat.updatedAt,
+        url: cStat.url,
+        fallbackReason: cStat.fallbackReason,
+      },
+    },
     sessions,
     subagents,
     prompts,
