@@ -8,6 +8,8 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -508,6 +510,8 @@ const BUNDLED_OFFICIAL_PRICING = {
   ],
 };
 
+const COMMON_LOCAL_PROXY_PORTS = [7890, 7897, 10808, 10809, 6152, 1087];
+
 function checkLocalPort(port, host = '127.0.0.1', timeoutMs = 120) {
   return new Promise((resolve) => {
     const sock = net.connect({ port, host });
@@ -523,20 +527,75 @@ function checkLocalPort(port, host = '127.0.0.1', timeoutMs = 120) {
 }
 
 function sanitizeProxyUrl(raw) {
-  const s = String(raw || '').trim();
+  let s = String(raw || '').trim();
   if (!s) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    s = `http://${s}`;
+  }
   try {
     const u = new URL(s);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:' && u.protocol !== 'socks5:') return null;
-    return u.toString().replace(/\/$/, '');
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    if (!u.hostname || !u.port) return null;
+    return `${u.protocol}//${u.username ? `${encodeURIComponent(u.username)}:${encodeURIComponent(u.password)}@` : ''}${u.hostname}:${u.port}`;
   } catch {
     return null;
   }
 }
 
-async function fetchAllowedPricingMarkdown(providerKey) {
-  const endpoint = OFFICIAL_PRICING_ENDPOINTS[providerKey];
-  if (!endpoint) throw new Error(`Unknown pricing provider: ${providerKey}`);
+async function detectOsSystemProxy() {
+  try {
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileAsync('scutil', ['--proxy'], { timeout: 800 });
+      const getVal = (k) => {
+        const m = stdout.match(new RegExp(`\\b${k}\\s*:\\s*([^\\s\\n]+)`));
+        return m ? m[1].trim() : '';
+      };
+      if (getVal('HTTPSEnable') === '1' && getVal('HTTPSProxy') && getVal('HTTPSPort')) {
+        return sanitizeProxyUrl(`http://${getVal('HTTPSProxy')}:${getVal('HTTPSPort')}`);
+      }
+      if (getVal('HTTPEnable') === '1' && getVal('HTTPProxy') && getVal('HTTPPort')) {
+        return sanitizeProxyUrl(`http://${getVal('HTTPProxy')}:${getVal('HTTPPort')}`);
+      }
+    } else if (process.platform === 'win32') {
+      const regKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+      const { stdout } = await execFileAsync('reg', ['query', regKey], { timeout: 1000, windowsHide: true });
+      const enabled = /ProxyEnable\s+REG_DWORD\s+0x1\b/i.test(stdout);
+      const serverMatch = stdout.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i);
+      if (enabled && serverMatch) {
+        const raw = serverMatch[1].trim();
+        const part =
+          raw.match(/(?:https=)\s*([^;]+)/i)?.[1] ||
+          raw.match(/(?:http=)\s*([^;]+)/i)?.[1] ||
+          raw.split(';')[0];
+        return sanitizeProxyUrl(part);
+      }
+    } else if (process.platform === 'linux') {
+      const { stdout: modeOut } = await execFileAsync('gsettings', ['get', 'org.gnome.system.proxy', 'mode'], {
+        timeout: 800,
+      });
+      if (/manual/i.test(modeOut)) {
+        const { stdout: hostOut } = await execFileAsync('gsettings', ['get', 'org.gnome.system.proxy.http', 'host'], {
+          timeout: 800,
+        });
+        const { stdout: portOut } = await execFileAsync('gsettings', ['get', 'org.gnome.system.proxy.http', 'port'], {
+          timeout: 800,
+        });
+        const host = hostOut.replace(/['"\s]/g, '');
+        const port = portOut.replace(/['"\s]/g, '');
+        if (host && Number(port) > 0) return sanitizeProxyUrl(`http://${host}:${port}`);
+      }
+    }
+  } catch {
+    // Ignore OS system proxy detection failures.
+  }
+  return null;
+}
+
+async function resolveProxyCandidates() {
+  const seen = new Set();
+  const add = (p) => {
+    if (!seen.has(p)) seen.add(p);
+  };
 
   const envProxy = sanitizeProxyUrl(
     process.env.MODEL_USAGE_PROXY ||
@@ -547,24 +606,135 @@ async function fetchAllowedPricingMarkdown(providerKey) {
       process.env.ALL_PROXY ||
       process.env.all_proxy
   );
+  if (envProxy) add(envProxy);
 
-  const proxyCandidates = [];
-  if (envProxy) {
-    proxyCandidates.push(envProxy);
-  } else if (await checkLocalPort(7890)) {
-    proxyCandidates.push('http://127.0.0.1:7890');
+  const sysProxy = await detectOsSystemProxy();
+  if (sysProxy) add(sysProxy);
+
+  const probed = await Promise.all(
+    COMMON_LOCAL_PROXY_PORTS.map(async (port) => ((await checkLocalPort(port)) ? `http://127.0.0.1:${port}` : null))
+  );
+  for (const p of probed) {
+    if (p) add(p);
   }
-  proxyCandidates.push(null);
 
+  add(null); // Direct fallback
+  return [...seen];
+}
+
+function httpsGetText(targetUrl, proxyUrl, timeoutMs = 6000, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (err, val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(val);
+    };
+
+    const target = new URL(targetUrl);
+    if (target.protocol !== 'https:') {
+      finish(new Error(`Disallowed protocol: ${target.protocol}`));
+      return;
+    }
+
+    const timer = setTimeout(() => finish(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+
+    const onResponse = (res) => {
+      const code = res.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(code) && res.headers.location) {
+        res.resume();
+        if (redirectsLeft <= 0) return finish(new Error('Too many redirects'));
+        const nextUrl = new URL(res.headers.location, targetUrl).toString();
+        httpsGetText(nextUrl, proxyUrl, timeoutMs, redirectsLeft - 1).then((v) => finish(null, v), finish);
+        return;
+      }
+      if (code < 200 || code >= 300) {
+        res.resume();
+        return finish(new Error(`HTTP ${code}`));
+      }
+      const chunks = [];
+      let len = 0;
+      res.on('data', (c) => {
+        len += c.length;
+        if (len > 4 * 1024 * 1024) {
+          res.destroy(new Error('Response exceeds 4MB'));
+          return;
+        }
+        chunks.push(c);
+      });
+      res.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
+      res.on('error', finish);
+    };
+
+    const headers = {
+      Host: target.host,
+      'User-Agent': 'Antigravity-ModelUsage/1.0',
+      Accept: 'text/markdown, text/plain, */*',
+      'Accept-Encoding': 'identity',
+      Connection: 'close',
+    };
+
+    if (!proxyUrl) {
+      const req = https.get(targetUrl, { headers }, onResponse);
+      req.on('error', finish);
+      return;
+    }
+
+    const proxy = new URL(proxyUrl);
+    const targetPort = Number(target.port) || 443;
+    const connectHeaders = { Host: `${target.hostname}:${targetPort}` };
+    if (proxy.username) {
+      const auth = Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password || '')}`).toString('base64');
+      connectHeaders['Proxy-Authorization'] = `Basic ${auth}`;
+    }
+
+    const connectReq = http.request({
+      hostname: proxy.hostname,
+      port: Number(proxy.port),
+      method: 'CONNECT',
+      path: `${target.hostname}:${targetPort}`,
+      headers: connectHeaders,
+    });
+    connectReq.once('connect', (res, socket, head) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        return finish(new Error(`Proxy CONNECT HTTP ${res.statusCode}`));
+      }
+      if (head && head.length) socket.unshift(head);
+      const req = https.request(
+        {
+          hostname: target.hostname,
+          port: targetPort,
+          path: target.pathname + target.search,
+          method: 'GET',
+          headers,
+          socket,
+          agent: false,
+          servername: target.hostname,
+        },
+        onResponse
+      );
+      req.on('error', finish);
+      req.end();
+    });
+    connectReq.on('error', finish);
+    connectReq.end();
+  });
+}
+
+async function fetchAllowedPricingMarkdown(providerKey, proxyCandidates) {
+  const endpoint = OFFICIAL_PRICING_ENDPOINTS[providerKey];
+  if (!endpoint) throw new Error(`Unknown pricing provider: ${providerKey}`);
+
+  const candidates = proxyCandidates || (await resolveProxyCandidates());
   let lastErr = null;
-  for (const proxy of proxyCandidates) {
+  for (const proxy of candidates) {
     try {
-      const args = ['-sSL', '--fail', '--max-time', '6'];
-      if (proxy) args.push('-x', proxy);
-      args.push(endpoint.mdUrl);
-      const { stdout } = await execFileAsync('/usr/bin/curl', args, { maxBuffer: 4 * 1024 * 1024 });
-      if (stdout && stdout.length > 500) {
-        return { text: stdout, via: proxy ? `proxy (${proxy})` : 'direct' };
+      const text = await httpsGetText(endpoint.mdUrl, proxy, 6000);
+      if (text && text.length > 500) {
+        return { text, via: proxy ? `proxy (${proxy})` : 'direct' };
       }
     } catch (err) {
       lastErr = err;
@@ -641,9 +811,10 @@ export async function refreshOfficialPricingCatalog(force = false) {
     }
   }
 
+  const proxyCandidates = await resolveProxyCandidates();
   const [gRes, cRes] = await Promise.allSettled([
-    fetchAllowedPricingMarkdown('google'),
-    fetchAllowedPricingMarkdown('anthropic'),
+    fetchAllowedPricingMarkdown('google', proxyCandidates),
+    fetchAllowedPricingMarkdown('anthropic', proxyCandidates),
   ]);
 
   const fetchedIso = new Date(nowMs).toISOString();
